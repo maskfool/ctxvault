@@ -1,0 +1,17 @@
+{
+  "name": "ctxvault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The handoff button for AI tools — durable, local-first, open-standard memory across MCP clients.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@ctxvault/engine && npm run build --workspace=@ctxvault/mcp-server",
+    "mcp": "npm run start --workspace=@ctxvault/mcp-server",
+    "mcp:dev": "npm run dev --workspace=@ctxvault/mcp-server",
+    "playground": "npm run dev --workspace=@ctxvault/playground"
+  }
+}
