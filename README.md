@@ -147,6 +147,22 @@ Together, vLLM, LM Studio — with no extra dependency.
 Embeddings are configured separately via `CTXVAULT_EMBED_MODEL` (default
 `openai:text-embedding-3-small`), because Anthropic ships no embeddings endpoint.
 
+**It runs free.** OpenRouter serves both chat and embeddings, so one free-tier key
+covers the whole product — or go fully offline with Ollama and use no key at all:
+
+```bash
+# one key, nothing to install
+CTXVAULT_MODEL=openrouter:<free-model>   CTXVAULT_EMBED_MODEL=openrouter:openai/text-embedding-3-small
+
+# no key, no network
+CTXVAULT_MODEL=compatible:llama3.1       CTXVAULT_EMBED_MODEL=compatible:nomic-embed-text
+CTXVAULT_BASE_URL=http://localhost:11434/v1
+```
+
+Pick a model that supports **structured outputs** — the summarizer constrains the
+model to a schema, and one that can't honour it falls back to raw storage. Setup,
+caveats, and how to read the boot status line: [docs/REGISTER.md](docs/REGISTER.md).
+
 Without any key, CtxVault degrades gracefully to raw storage and a local lexical
 search — never a dead button.
 

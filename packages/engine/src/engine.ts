@@ -170,7 +170,16 @@ export class CtxEngine {
     // (or dimensions) is noise, not signal.
     const pool = Math.min(50, Math.max(k * 5, k));
     const candidates = await this.store.search(project, queryVec, pool, this.embedder.id);
-    return rankHits(candidates).slice(0, k);
+    // Relevance floor: top-k with no floor returns SOMETHING for any query, and
+    // a weak hit presented as a result reads as an answer ("no match" must be
+    // said, not implied by a low number). Real embedding models put unrelated
+    // text well below ~0.3 cosine; the local hashing embedder runs much colder
+    // (a single shared word on short texts can score ~0.1), so it gets a lower
+    // floor rather than none — zero-overlap noise still lands near 0.
+    const floor = this.embedder.id.startsWith("local-hash") ? 0.05 : 0.3;
+    return rankHits(candidates)
+      .filter((h) => h.similarity >= floor)
+      .slice(0, k);
   }
 
   /**
