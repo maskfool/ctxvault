@@ -1,6 +1,7 @@
 "use client";
 
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { Markdown } from "@/lib/markdown";
 
 type Pane = "A" | "B";
 
@@ -373,7 +374,9 @@ function ChatPane(props: {
         {props.msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role} ${m.resumed ? "resumed" : ""}`}>
             <div className="who">{m.role === "user" ? "you" : meta.name}</div>
-            <div className="bubble">{m.content}</div>
+            <div className="bubble">
+              {m.role === "assistant" ? <Markdown text={m.content} /> : m.content}
+            </div>
           </div>
         ))}
       </div>
