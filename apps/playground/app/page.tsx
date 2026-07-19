@@ -188,8 +188,6 @@ export default function Page() {
         <button className="primary save-button" onClick={save} disabled={!!busy}>
           ▣ SAVE CONTEXT
         </button>
-        <button className="icon-button" type="button" aria-label="History">↶</button>
-        <button className="icon-button" type="button" aria-label="Settings">⚙</button>
       </header>
       <div className="blue-rule" />
 
@@ -254,8 +252,8 @@ export default function Page() {
       </div>
 
       <footer className="trust">
-        <div className="footer-left"><span className="brand footer-brand">ctx<span>Vault</span></span><span>© 2024 — THE HANDOFF BUTTON FOR AI TOOLS</span></div>
-        <div className="footer-links"><span>Documentation</span><span>Vault API</span><span>Privacy</span><span>Support</span></div>
+        <div className="footer-left"><span>© 2024 — THE HANDOFF BUTTON FOR AI TOOLS</span></div>
+        <div className="footer-links"><a href="https://github.com/maskfool/ctxvault">Install from GitHub</a><span aria-label="love">❤️</span></div>
         <div className="session-trust">🔒 Same engine runs locally as an MCP server inside Claude Code &amp; Codex. Here it runs over HTTP with an in-memory store keyed to <code>your session</code>.</div>
       </footer>
     </div>

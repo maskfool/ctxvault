@@ -7,7 +7,7 @@ type *"resume"* — and it already knows your goal, your decisions, what's half-
 and what to do next. No copy-paste. No re-explaining. That's CtxVault.
 
 <!-- After deploying, fill these in — they are submission gates: -->
-> 🔗 **Live playground:** _add your Vercel URL_ &nbsp;·&nbsp; 🎥 **3-min demo:** _add your video link_
+> 🔗 **Live playground:** [ctxvault.madebyshubham.in](https://ctxvault.madebyshubham.in/) &nbsp;·&nbsp; 🎥 **3-min demo:** _add your video link_
 
 ---
 
