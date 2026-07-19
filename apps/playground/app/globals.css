@@ -25,7 +25,7 @@ input { width: 100%; min-width: 0; outline: 0; border: 1px solid var(--border); 
 input:focus { border-color: var(--accent); }
 input::placeholder { color: var(--faint); }
 
-.app { min-height: 100vh; height: 100vh; display: grid; grid-template-rows: auto 4px auto minmax(0, 1fr) auto; overflow: hidden; }
+.app { min-height: 100vh; height: 100vh; display: grid; grid-template-rows: auto 4px auto auto minmax(0, 1fr) auto; overflow: hidden; }
 .topbar { min-height: 59px; display: flex; align-items: center; gap: 15px; padding: 10px 22px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .brand { color: var(--accent); font-family: var(--sans); font-size: 22px; font-style: italic; font-weight: 900; letter-spacing: -1.3px; white-space: nowrap; }
 .brand span { font-style: normal; font-weight: 800; }
@@ -48,6 +48,20 @@ input::placeholder { color: var(--faint); }
 .actionbar .status { margin-left: auto; color: var(--dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actionbar .status.warn { color: var(--yellow); }
 .spin { color: var(--yellow); text-transform: uppercase; font-size: 10px; }
+
+/* guided demo strip — tells a judge the exact path: Save → Resume → Search */
+.guide { display: flex; align-items: stretch; gap: 10px; padding: 11px 20px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+.guide-lead { display: flex; align-items: center; color: var(--yellow); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 1px; white-space: nowrap; }
+.guide-step { display: flex; align-items: center; gap: 10px; padding: 7px 13px; text-align: left; background: var(--elev); border: 1px solid var(--border); color: var(--dim); cursor: pointer; }
+.guide-num { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 auto; border: 1px solid var(--faint); font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--dim); }
+.guide-text { display: flex; flex-direction: column; line-height: 1.3; }
+.guide-main { color: var(--text); font-family: var(--mono); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; }
+.guide-sub { color: var(--dim); font-size: 10.5px; }
+.guide-step.active { border-color: var(--accent); box-shadow: 4px 4px 0 #000; }
+.guide-step.active .guide-num { border-color: var(--accent); background: var(--accent); color: #fff; }
+.guide-step.done { border-color: #23331f; }
+.guide-step.done .guide-num { border-color: var(--gold); color: var(--gold); }
+.guide-step:disabled { cursor: default; opacity: .55; }
 
 .columns { min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; padding: 13px 18px 16px; background: var(--bg); }
 .col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -84,6 +98,11 @@ input::placeholder { color: var(--faint); }
 .empty-panel p { margin: 0; font-size: 11px; line-height: 1.55; }
 .empty-diamond { width: 61px; height: 61px; display: grid; place-items: center; border: 3px solid var(--faint); transform: rotate(45deg); margin-bottom: 9px; }
 .empty-diamond span { color: var(--gold); font-size: 23px; transform: rotate(-45deg); }
+.empty-panel.start p { max-width: 320px; }
+.starters { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 340px; margin-top: 4px; }
+.starters-label { color: var(--faint); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.starter { padding: 9px 11px; text-align: left; color: var(--text); background: var(--elev); border: 1px solid var(--border); font-size: 11px; line-height: 1.4; cursor: pointer; }
+.starter:hover:not(:disabled) { border-color: var(--accent); }
 
 .vault-head { border: 0; }
 .vault-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 14px; }

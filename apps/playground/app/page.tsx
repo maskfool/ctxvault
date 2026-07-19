@@ -1,9 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { SEED_TOOL_A } from "@/lib/seed";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 type Pane = "A" | "B";
+
+/** One-click starter prompts for the empty Tool A pane — a judge picks one and
+ *  a real planning session begins, no blank-box paralysis and no faked chat. */
+const STARTERS = [
+  "Plan a rate limiter for a public API — must handle bursty traffic across multiple server instances.",
+  "Design an MCP server that lets two AI tools hand off working context to each other.",
+];
 type Msg = { role: "user" | "assistant"; content: string; resumed?: boolean };
 
 type Decision = { what: string; why: string };
@@ -44,7 +50,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 }
 
 export default function Page() {
-  const [msgs, setMsgs] = useState<Record<Pane, Msg[]>>({ A: SEED_TOOL_A as Msg[], B: [] });
+  const [msgs, setMsgs] = useState<Record<Pane, Msg[]>>({ A: [], B: [] });
   const [resumed, setResumed] = useState<Record<Pane, string | null>>({ A: null, B: null });
   const [active, setActive] = useState<Pane>("A");
   const [draft, setDraft] = useState<Record<Pane, string>>({ A: "", B: "" });
@@ -53,6 +59,12 @@ export default function Page() {
   const [vault, setVault] = useState<Vault | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const focusSearch = useCallback(() => {
+    searchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    searchRef.current?.focus();
+  }, []);
 
   const loadVault = useCallback(async () => {
     const res = await fetch("/api/vault");
@@ -66,8 +78,8 @@ export default function Page() {
   const transcriptOf = (pane: Pane) =>
     msgs[pane].map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
-  async function send(pane: Pane) {
-    const text = draft[pane].trim();
+  async function send(pane: Pane, textArg?: string) {
+    const text = (textArg ?? draft[pane]).trim();
     if (!text || busy) return;
     setActive(pane);
     const next = [...msgs[pane], { role: "user" as const, content: text }];
@@ -150,7 +162,7 @@ export default function Page() {
 
   async function reset() {
     await post("/api/reset", {});
-    setMsgs({ A: SEED_TOOL_A as Msg[], B: [] });
+    setMsgs({ A: [], B: [] });
     setResumed({ A: null, B: null });
     setHits(null);
     setActive("A");
@@ -159,6 +171,9 @@ export default function Page() {
   }
 
   const hasMemory = Boolean(vault?.note || (vault?.facts.length ?? 0) > 0);
+  // For the guide, ANY save counts (a raw/demo-mode save has no note but still
+  // makes resume work), so the step advances even without an AI key.
+  const hasSaved = hasMemory || (vault?.sessions.length ?? 0) > 0;
 
   return (
       <div className="app">
@@ -170,10 +185,6 @@ export default function Page() {
           <button className="nav-link" type="button" onClick={() => setActive("B")}>Tool B</button>
         </nav>
         <div className="spacer" />
-        <div className={`badge ${vault?.aiEnabled ? "on" : "off"}`}>
-          {vault?.aiEnabled ? `AI: ON (${vault.model})` : "AI: DEMO MODE (NO KEY)"}
-        </div>
-        <div className="badge">embeddings: {vault?.embedder ?? "…"}</div>
         <button className="primary save-button" onClick={save} disabled={!!busy}>
           ▣ SAVE CONTEXT
         </button>
@@ -191,6 +202,16 @@ export default function Page() {
         </span>
       </div>
 
+      <GuideStrip
+        step={!hasSaved ? 1 : !resumed.B ? 2 : 3}
+        busy={!!busy}
+        onSave={save}
+        onResume={() => resume("B")}
+        onSearch={focusSearch}
+        saved={hasSaved}
+        resumedB={!!resumed.B}
+      />
+
       <div className="columns">
         <ChatPane
           pane="A"
@@ -202,6 +223,7 @@ export default function Page() {
           onDraft={(v) => setDraft((d) => ({ ...d, A: v }))}
           onSend={() => send("A")}
           onResume={() => resume("A")}
+          onExample={(t) => send("A", t)}
           busy={!!busy}
         />
 
@@ -213,6 +235,7 @@ export default function Page() {
           onSearch={search}
           hits={hits}
           busy={!!busy}
+          searchRef={searchRef}
         />
 
         <ChatPane
@@ -225,6 +248,7 @@ export default function Page() {
           onDraft={(v) => setDraft((d) => ({ ...d, B: v }))}
           onSend={() => send("B")}
           onResume={() => resume("B")}
+          onExample={(t) => send("B", t)}
           busy={!!busy}
         />
       </div>
@@ -234,6 +258,60 @@ export default function Page() {
         <div className="footer-links"><span>Documentation</span><span>Vault API</span><span>Privacy</span><span>Support</span></div>
         <div className="session-trust">🔒 Same engine runs locally as an MCP server inside Claude Code &amp; Codex. Here it runs over HTTP with an in-memory store keyed to <code>your session</code>.</div>
       </footer>
+    </div>
+  );
+}
+
+function GuideStrip(props: {
+  step: 1 | 2 | 3;
+  busy: boolean;
+  saved: boolean;
+  resumedB: boolean;
+  onSave: () => void;
+  onResume: () => void;
+  onSearch: () => void;
+}) {
+  const steps = [
+    {
+      n: 1 as const,
+      main: "Save context",
+      sub: "Save Tool A's planning chat into the Vault",
+      on: props.onSave,
+      done: props.saved,
+    },
+    {
+      n: 2 as const,
+      main: "Resume in Tool B",
+      sub: "A different, cold tool picks the work back up",
+      on: props.onResume,
+      done: props.resumedB,
+    },
+    {
+      n: 3 as const,
+      main: "Search the memory",
+      sub: "Recall a decision by meaning, not keywords",
+      on: props.onSearch,
+      done: false,
+    },
+  ];
+  return (
+    <div className="guide" aria-label="Guided demo steps">
+      <div className="guide-lead">▸ TRY&nbsp;THE&nbsp;HANDOFF</div>
+      {steps.map((s) => (
+        <button
+          key={s.n}
+          className={`guide-step ${props.step === s.n ? "active" : ""} ${s.done ? "done" : ""}`}
+          onClick={s.on}
+          disabled={props.busy}
+          type="button"
+        >
+          <span className="guide-num">{s.done ? "✓" : s.n}</span>
+          <span className="guide-text">
+            <span className="guide-main">{s.main}</span>
+            <span className="guide-sub">{s.sub}</span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -248,6 +326,7 @@ function ChatPane(props: {
   onDraft: (v: string) => void;
   onSend: () => void;
   onResume: () => void;
+  onExample: (text: string) => void;
   busy: boolean;
 }) {
   const meta = PANE_META[props.pane];
@@ -268,13 +347,28 @@ function ChatPane(props: {
         <div className="resumed-banner">✓ Resumed context injected — this tool knows your prior session.</div>
       )}
       <div className="messages" ref={scrollRef}>
-        {props.msgs.length === 0 && (
+        {props.msgs.length === 0 && props.pane === "A" && (
+          <div className="empty-panel start">
+            <div className="empty-diamond"><span>›_</span></div>
+            <strong>START A PLANNING SESSION</strong>
+            <p>Chat here to plan any project. When you&apos;re ready, hit <b>Save context</b> to hand it off to Tool&nbsp;B.</p>
+            <div className="starters">
+              <div className="starters-label">Try one:</div>
+              {STARTERS.map((s) => (
+                <button key={s} className="starter" onClick={() => props.onExample(s)} disabled={props.busy}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {props.msgs.length === 0 && props.pane === "B" && (
           <div className="empty-panel">
             <div className="empty-diamond"><span>›_</span></div>
             <strong>EMPTY PANEL</strong>
-            <p>Resume here from Tool {props.pane === "A" ? "B" : "A"}<br />or start typing below.</p>
+            <p>Resume here from Tool A<br />or start typing below.</p>
             <button className="primary" onClick={props.onResume} disabled={props.busy}>
-              RESUME IN TOOL {props.pane}
+              RESUME IN TOOL B
             </button>
           </div>
         )}
@@ -312,6 +406,7 @@ function VaultPanel(props: {
   onSearch: () => void;
   hits: Hit[] | null;
   busy: boolean;
+  searchRef: RefObject<HTMLInputElement>;
 }) {
   const { vault } = props;
   const note = vault?.note ?? null;
@@ -324,7 +419,7 @@ function VaultPanel(props: {
         <div className="vault-title">▤ THE VAULT</div>
       </div>
       <div className="vault-body">
-        {!props.hasMemory && <div className="hint"><div>☼ &nbsp;TRY THIS:</div><p>Tool A already has a planning session. Hit <b>SAVE CONTEXT</b> to sync. Then switch to Tool B and <b>RESUME</b>.</p></div>}
+        {!props.hasMemory && <div className="hint"><div>☼ &nbsp;TRY THIS:</div><p>Plan a project in <b>Tool A</b> (pick a starter or type your own). Hit <b>SAVE CONTEXT</b> to sync, then switch to Tool B and <b>RESUME</b>.</p></div>}
 
         {note && (
           <div>
@@ -403,6 +498,7 @@ function VaultPanel(props: {
           <div className="section-label">🔍 Search memory (semantic)</div>
           <div className="search-box">
             <input
+              ref={props.searchRef}
               value={props.query}
               placeholder="e.g. why token bucket? what hashing?"
               onChange={(e) => props.setQuery(e.target.value)}
