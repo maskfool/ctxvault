@@ -175,7 +175,29 @@ what the first one saved — even though they never talked to each other.
 
 For a tool without MCP, step 2 becomes `ctx export | pbcopy` and a paste.
 
-## 7. Using a clean vault for demos
+## 7. One vault on every machine
+
+The vault is a folder of markdown, so syncing it is a git push — to a private repo
+**you** own, with no service in between:
+
+```bash
+ctx sync init git@github.com:you/my-vault.git
+ctx sync            # commit · pull --rebase · push · rebuild the index
+ctx sync status     # remote, branch, uncommitted changes
+```
+
+On the other machine, clone into `~/.ctxvault` (or set `CTXVAULT_HOME`) and run
+`ctx reindex`. There is no database in the repo — `ctx sync init` writes a
+`.gitignore` for it — because it is a derived index that gets rebuilt from the
+markdown on arrival.
+
+What doesn't survive the trip: **vectors**, since regenerating them needs an API
+call. Keyword search works immediately; hybrid users re-embed on their next save.
+
+Conflicts are rare (one file per fact, handoffs are append-only) and are plain
+markdown when they happen — fix the file, `git rebase --continue`, `ctx sync`.
+
+## 8. Using a clean vault for demos
 
 Set `CTXVAULT_HOME` to an empty dir so a demo starts fresh:
 

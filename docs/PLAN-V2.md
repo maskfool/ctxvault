@@ -1,9 +1,16 @@
 # CtxVault v2 — "Zero API Keys" Pivot Plan
 
-> **Status (2026-08-09):** Phases 1, 2, 3 and 5 are implemented and verified end to
-> end — engine, MCP server, `ctx` CLI, playground, and all docs. `SUMMARIZER.md`
-> was replaced by [HANDOFF.md](HANDOFF.md) and `EMBEDDINGS.md` by
-> [SEARCH.md](SEARCH.md). **Remaining: Phase 4 — git sync.**
+> **Status (2026-08-09): complete.** All five phases are implemented and verified
+> end to end — engine, MCP server, `ctx` CLI, git sync, playground, and docs.
+> `SUMMARIZER.md` was replaced by [HANDOFF.md](HANDOFF.md) and `EMBEDDINGS.md` by
+> [SEARCH.md](SEARCH.md).
+>
+> One thing the plan got wrong: phase 4 assumed the markdown files were already the
+> source of truth. They weren't — HandoffNotes lived only in `snapshots.handoff_json`,
+> so a synced folder would have carried the project's knowledge and dropped every
+> "where was I". Handoffs became markdown files (`okf/handoff.ts`) first, and
+> `importFromFiles()` now rebuilds the entire database from disk. That made the
+> invariant real instead of aspirational.
 
 **Goal:** CtxVault stops being an AI service (that summarizes with its own LLM) and becomes
 **a format + a place**: the calling agent does the thinking, CtxVault stores, searches,
@@ -145,14 +152,23 @@ case.
 
 ---
 
-## Phase 4 — Sync via the user's own git remote (later / stretch)
+## Phase 4 — Sync via the user's own git remote ✅
 
-- `ctx sync init <remote-url>` → `git init` inside `~/.ctxvault`, add remote.
-- `ctx sync` → commit-all + pull --rebase + push. Conflicts: facts are one-file-per-fact
-  markdown, so conflicts are rare and human-fixable; SQLite is **not synced** — it's an
-  index, rebuild it from the markdown (add `ctx reindex`).
-- This ordering forces a good invariant: **markdown files are the source of truth,
-  SQLite is a derived index.** Worth stating in SPEC.md.
+**Prerequisite discovered during implementation:** handoffs had to become files
+first. `okf/handoff.ts` writes one markdown file per snapshot (structured note in
+frontmatter, transcript in the body), and `SqliteAdapter.importFromFiles()` rebuilds
+snapshots *and* facts from disk. Only then is "markdown is the truth" true.
+
+- `ctx sync init <remote-url>` → `git init` in `~/.ctxvault`, write a `.gitignore`
+  excluding `ctxvault.db*`, add/update the `origin` remote.
+- `ctx sync` → add -A · commit · `pull --rebase` · push · `importFromFiles()` +
+  `reindex()`. A rebase conflict stops and prints the exact recovery commands.
+- `ctx sync status` → remote, branch, uncommitted count.
+- **Not synced:** the database (derived) and vectors (need an API call to
+  regenerate). Keyword search is fully restored on arrival — which is the argument
+  for why the free half of search had to be the default.
+- Verified: two vaults against a bare remote, bidirectional; and
+  `rm ctxvault.db && ctx reindex` restoring a vault from markdown alone.
 
 ---
 

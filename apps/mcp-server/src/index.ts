@@ -61,7 +61,10 @@ function buildEmbedder(): Embedder | null {
 }
 
 // knowledgeDir on → facts are written as human-readable OKF markdown files.
-const store = new SqliteAdapter(config.dbPath, { knowledgeDir: config.knowledgeDir });
+const store = new SqliteAdapter(config.dbPath, {
+  knowledgeDir: config.knowledgeDir,
+  handoffDir: config.handoffDir,
+});
 const engine = new CtxEngine(store, embedder);
 
 const server = new McpServer({

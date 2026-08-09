@@ -15,7 +15,8 @@ import type {
 } from "../types.js";
 import { cosineSimilarity } from "../lib/vector.js";
 import { bm25Rank, ftsQuery, handoffSearchBody, normalizeBm25 } from "../lib/text.js";
-import { writeOkfFile } from "../okf/okf.js";
+import { listOkfFiles, writeOkfFile } from "../okf/okf.js";
+import { listHandoffFiles, listProjectDirs, writeHandoffFile } from "../okf/handoff.js";
 
 /**
  * SqliteAdapter — the durable, local-first implementation of StorageAdapter.
@@ -37,21 +38,25 @@ import { writeOkfFile } from "../okf/okf.js";
 export class SqliteAdapter implements StorageAdapter {
   private db: Database.Database;
   private knowledgeDir?: string;
+  private handoffDir?: string;
   /** False on a SQLite build compiled without FTS5 — we then rank in JS. */
   private fts = true;
 
   /**
    * @param dbPath  path to the SQLite file.
-   * @param opts.knowledgeDir  where to write OKF markdown files. Omit it and
-   *   facts are stored SQLite-only (contingency-ladder rung 1: the Vault still
-   *   shows facts, just not as files).
+   * @param opts.knowledgeDir  where to write OKF fact files. Omit it and facts
+   *   are stored SQLite-only (the Vault still shows them, just not as files).
+   * @param opts.handoffDir  where to write handoff files. Omit it and handoffs
+   *   live only in this database — which means they don't survive a vault synced
+   *   as a folder, and `importFromFiles()` can't rebuild them.
    */
-  constructor(dbPath: string, opts: { knowledgeDir?: string } = {}) {
+  constructor(dbPath: string, opts: { knowledgeDir?: string; handoffDir?: string } = {}) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.knowledgeDir = opts.knowledgeDir;
+    this.handoffDir = opts.handoffDir;
     this.migrate();
   }
 
@@ -203,6 +208,86 @@ export class SqliteAdapter implements StorageAdapter {
     }
   }
 
+  /**
+   * Rebuild the database from the markdown files on disk.
+   *
+   * This is what makes "markdown is the truth, SQLite is a derived index" an
+   * operational fact rather than a slogan: delete `ctxvault.db`, run this, and
+   * the vault is back. It's also what makes syncing a vault as a plain folder
+   * work — a teammate's facts and handoffs arrive as files and get imported here.
+   *
+   * Upserts rather than wipes, so importing never destroys local rows that
+   * simply haven't been written to disk yet.
+   *
+   * NOT rebuilt: vectors. They're the one derived artefact that needs an API
+   * call to regenerate, so hybrid users re-embed on their next save. Keyword
+   * search is fully restored, which is why it's the one that must be keyless.
+   */
+  async importFromFiles(): Promise<{ facts: number; handoffs: number }> {
+    let facts = 0;
+    let handoffs = 0;
+
+    if (this.knowledgeDir) {
+      for (const dir of listProjectDirs(this.knowledgeDir)) {
+        for (const fact of listOkfFiles(this.knowledgeDir, dir)) {
+          // Not saveFact(): that would rewrite the very file we just read. Go
+          // straight to the row and the index.
+          this.upsertFactRow(fact);
+          this.putTextDoc({
+            project: fact.project,
+            kind: "fact",
+            refId: fact.slug,
+            filePath: fact.filePath,
+            title: fact.title,
+            tags: fact.tags.join(" "),
+            body: fact.body,
+            createdAt: fact.updatedAt,
+          });
+          facts++;
+        }
+      }
+    }
+
+    if (this.handoffDir) {
+      for (const dir of listProjectDirs(this.handoffDir)) {
+        for (const snap of listHandoffFiles(this.handoffDir, dir)) {
+          this.db
+            .prepare(
+              `INSERT INTO snapshots (id, project, session, created_at, raw_transcript, handoff_json)
+               VALUES (@id, @project, @session, @createdAt, @rawTranscript, @handoffJson)
+               ON CONFLICT(id) DO UPDATE SET
+                 project=excluded.project, session=excluded.session,
+                 created_at=excluded.created_at, raw_transcript=excluded.raw_transcript,
+                 handoff_json=excluded.handoff_json`,
+            )
+            .run({
+              id: snap.id,
+              project: snap.project,
+              session: snap.session,
+              createdAt: snap.createdAt,
+              rawTranscript: snap.rawTranscript,
+              handoffJson: snap.handoffNote ? JSON.stringify(snap.handoffNote) : null,
+            });
+          this.putTextDoc({
+            project: snap.project,
+            kind: "handoff",
+            refId: snap.id,
+            filePath: null,
+            title: snap.handoffNote?.goal ?? `Session ${snap.session}`,
+            tags: snap.session,
+            body: snap.handoffNote
+              ? handoffSearchBody(snap.handoffNote)
+              : snap.rawTranscript.slice(0, 8000),
+            createdAt: snap.createdAt,
+          });
+          handoffs++;
+        }
+      }
+    }
+
+    return { facts, handoffs };
+  }
+
   /** Rebuild the FTS mirror from text_docs. text_docs is the source of truth. */
   reindex(): number {
     if (!this.fts) return 0;
@@ -241,6 +326,15 @@ export class SqliteAdapter implements StorageAdapter {
       rawTranscript: input.rawTranscript,
       handoffNote: input.handoffNote ?? null,
     };
+    // File first, same as facts: markdown is the durable copy, the row is the
+    // index. A write failure here must not lose the snapshot, so it's best-effort.
+    if (this.handoffDir) {
+      try {
+        writeHandoffFile(this.handoffDir, snap);
+      } catch {
+        // Disk full, permissions, read-only mount — the row below still lands.
+      }
+    }
     this.db
       .prepare(
         `INSERT INTO snapshots (id, project, session, created_at, raw_transcript, handoff_json)
@@ -293,7 +387,12 @@ export class SqliteAdapter implements StorageAdapter {
       ? { ...fact, filePath: writeOkfFile(this.knowledgeDir, fact) }
       : fact;
 
-    // Upsert by (project, slug): same slug overwrites, no merge. Bump updated_at.
+    this.upsertFactRow(stored);
+    return stored;
+  }
+
+  /** Row-only upsert by (project, slug): same slug overwrites, no merge. */
+  private upsertFactRow(fact: StoredFact) {
     this.db
       .prepare(
         `INSERT INTO facts (project, slug, type, title, body, tags_json, file_path, session, updated_at)
@@ -304,17 +403,16 @@ export class SqliteAdapter implements StorageAdapter {
            session=excluded.session, updated_at=excluded.updated_at`,
       )
       .run({
-        project: stored.project,
-        slug: stored.slug,
-        type: stored.type,
-        title: stored.title,
-        body: stored.body,
-        tagsJson: JSON.stringify(stored.tags),
-        filePath: stored.filePath,
-        session: stored.session,
-        updatedAt: stored.updatedAt,
+        project: fact.project,
+        slug: fact.slug,
+        type: fact.type,
+        title: fact.title,
+        body: fact.body,
+        tagsJson: JSON.stringify(fact.tags),
+        filePath: fact.filePath,
+        session: fact.session,
+        updatedAt: fact.updatedAt,
       });
-    return stored;
   }
 
   async listFacts(project: string): Promise<StoredFact[]> {

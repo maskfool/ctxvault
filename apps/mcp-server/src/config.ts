@@ -9,8 +9,14 @@ import { join } from "node:path";
  */
 const home = process.env.CTXVAULT_HOME ?? join(homedir(), ".ctxvault");
 
+/**
+ * The two markdown trees are the vault's SOURCE OF TRUTH; the .db beside them is
+ * a derived index that `ctx reindex` can rebuild from scratch. That's what makes
+ * `ctx sync` a plain folder sync rather than a database-replication problem.
+ */
 export const config = {
   home,
   dbPath: join(home, "ctxvault.db"),
-  knowledgeDir: join(home, "knowledge"), // OKF markdown files (Phase 2)
+  knowledgeDir: join(home, "knowledge"), // OKF fact files
+  handoffDir: join(home, "handoffs"), // one markdown file per saved session
 };

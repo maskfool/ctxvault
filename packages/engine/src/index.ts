@@ -16,6 +16,14 @@ export {
   listOkfFiles,
   okfPath,
 } from "./okf/okf.js";
+export {
+  handoffToMarkdown,
+  handoffPath,
+  writeHandoffFile,
+  readHandoffFile,
+  listHandoffFiles,
+  listProjectDirs,
+} from "./okf/handoff.js";
 export { slugify } from "./lib/slug.js";
 export { CtxEngine } from "./engine.js";
 export type {

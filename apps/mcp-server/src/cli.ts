@@ -11,6 +11,7 @@ import {
   type HarnessTarget,
 } from "@ctxvault/engine";
 import { config } from "./config.js";
+import { syncInit, syncRun, syncStatus } from "./sync.js";
 
 /**
  * cli.ts — CtxVault without an agent.
@@ -31,7 +32,11 @@ Usage
   ctx search <query...> [--project P] [-k N]
   ctx list [--project P]                 durable facts stored for the project
   ctx sessions [--project P]             saved sessions/threads
-  ctx reindex                            rebuild the search index from stored docs
+  ctx reindex                            rebuild the database from the markdown files
+
+  ctx sync init <remote-url>             put the vault on YOUR private git remote
+  ctx sync                               commit · pull --rebase · push · reindex
+  ctx sync status                        remote, branch, uncommitted changes
 
 Options
   --project P   defaults to the current directory name ("${basename(process.cwd())}")
@@ -93,7 +98,10 @@ async function main() {
     return;
   }
 
-  const store = new SqliteAdapter(config.dbPath, { knowledgeDir: config.knowledgeDir });
+  const store = new SqliteAdapter(config.dbPath, {
+    knowledgeDir: config.knowledgeDir,
+    handoffDir: config.handoffDir,
+  });
   const engine = new CtxEngine(store, buildEmbedder());
   const project = projectFrom(flags);
 
@@ -177,8 +185,38 @@ async function main() {
     }
 
     case "reindex": {
+      // Files first, then the FTS mirror: the markdown is the truth, so a
+      // reindex that only rebuilt the mirror would faithfully preserve whatever
+      // the database had already lost.
+      const { facts, handoffs } = await store.importFromFiles();
       const n = store.reindex();
-      process.stdout.write(`Reindexed ${n} document(s) from the vault at ${config.home}.\n`);
+      process.stdout.write(
+        `Rebuilt from ${config.home}: ${facts} fact(s), ${handoffs} handoff(s); ` +
+          `${n} document(s) indexed.\n`,
+      );
+      break;
+    }
+
+    case "sync": {
+      const sub = rest[0];
+      if (sub === "init") {
+        const remote = rest[1];
+        if (!remote) {
+          process.stderr.write("ctx sync init <remote-url>\n");
+          process.exitCode = 1;
+          break;
+        }
+        process.stdout.write(syncInit(remote).join("\n") + "\n");
+      } else if (sub === "status") {
+        process.stdout.write(syncStatus().join("\n") + "\n");
+      } else {
+        const lines = await syncRun(async () => {
+          const counts = await store.importFromFiles();
+          store.reindex();
+          return counts;
+        });
+        process.stdout.write(lines.join("\n") + "\n");
+      }
       break;
     }
 

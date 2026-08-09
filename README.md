@@ -34,9 +34,9 @@ list_facts       → show me what this project "knows"
 list_sessions    → what threads of work are saved?
 ```
 
-Everything lives **on your machine**: one SQLite file + a folder of plain markdown.
-No cloud, no account, no server to run. Delete the folder and the memory is gone —
-it's yours.
+Everything lives **on your machine**: two folders of plain markdown plus a SQLite
+index you can delete and rebuild. No cloud, no account, no server to run. Delete the
+folder and the memory is gone — it's yours.
 
 ## Zero API keys
 
@@ -92,7 +92,10 @@ What using OKF bought us, concretely:
   gotchas — each typed and tagged, so `list_facts` reads like a project wiki
   that wrote itself.
 
-Find yours in `~/.ctxvault/knowledge/<project>/*.md`.
+Find yours in `~/.ctxvault/knowledge/<project>/*.md`. Saved sessions get the same
+treatment in `~/.ctxvault/handoffs/<project>/<session>/*.md` — structured note in the
+frontmatter, transcript in the body. The database beside them is a **derived index**:
+`rm ctxvault.db && ctx reindex` restores the whole vault from these files.
 
 ---
 
@@ -217,6 +220,24 @@ The `--to claude` / `--to agents` block lives between markers and is **replaced*
 on every export, never appended — so those files stay a small current-state card
 instead of growing forever. Everything outside the markers is left untouched.
 
+## One vault, every machine — on your own git remote
+
+"Continue anywhere" usually means someone else runs a sync service and holds your
+memory. It doesn't have to. The vault is already a folder of markdown, so:
+
+```bash
+ctx sync init git@github.com:you/my-vault.git   # a private repo you own
+ctx sync                                        # commit · pull --rebase · push
+```
+
+Laptop, desktop, Codespaces, a teammate — same memory, no account, no server, no
+one else's disk. The `.db` is **not** synced: it's a derived index, and
+`ctx reindex` rebuilds it from the markdown on the other side. Delete the
+database entirely and the vault comes back intact — that's the invariant.
+
+Conflicts stay rare by design: one file per fact, and handoffs are append-only.
+When one does happen, it's a markdown file you can just open and fix.
+
 ## Not another bloated CLAUDE.md
 
 The advice going around is "keep CLAUDE.md minimal, it's poisoning your context."
@@ -334,12 +355,13 @@ packages/engine     # the brain — transport-agnostic, and model-free
   ├─ ai/            # provider seam (optional embedders, via the AI SDK)
   ├─ embed/         # embedder interface + implementation (optional upgrade)
   ├─ export/        # CLAUDE.md / AGENTS.md block writer (bounded, replaceable)
-  ├─ okf/           # OKF markdown read/write
+  ├─ okf/           # OKF fact files + handoff files (the source of truth)
   ├─ storage/       # StorageAdapter: SQLite+FTS5 (local) · in-memory (hosted)
   ├─ lib/text.ts    # FTS query building + a BM25 fallback
   ├─ retriever.ts   # hybrid blend: keyword + vector + recency
   └─ engine.ts      # save / resume / search / export
 apps/mcp-server     # local front door — stdio MCP server (6 tools) + the `ctx` CLI
+  └─ sync.ts        # vault over your own git remote
 apps/playground     # hosted front door — three-pane Next.js demo
 docs/               # deep dives — start with CODE-TOUR.md
 ```
@@ -355,8 +377,6 @@ docs/               # deep dives — start with CODE-TOUR.md
 
 ## Roadmap
 
-- `ctx sync` — push `~/.ctxvault` to **your own** private git remote. Same vault
-  on every machine, and a shared one for a team, with no service in the middle
 - OKF merge intelligence — today an updated fact overwrites only when the slug
   matches; contradicting facts can coexist until then (known, on the list)
 - Auto-capture hooks (save without asking)

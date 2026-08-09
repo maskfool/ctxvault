@@ -33,6 +33,10 @@ export function factToMarkdown(fact: StoredFact): string {
   return matter.stringify(fact.body.trim() + "\n", {
     type: fact.type,
     title: fact.title,
+    // The directory name is slugified, so it can't reproduce the project string
+    // a tool actually queries with ("My App" → "my-app"). Record the real one so
+    // a vault rebuilt from files answers to the same name.
+    project: fact.project,
     updated: fact.updatedAt,
     session: fact.session,
     tags: fact.tags,
@@ -57,7 +61,7 @@ export function readOkfFile(path: string, project: string, slug: string): Stored
   const parsed = matter(readFileSync(path, "utf8"));
   const data = parsed.data as Record<string, unknown>;
   return {
-    project,
+    project: typeof data.project === "string" ? data.project : project,
     slug,
     type: (data.type as FactType) ?? "reference",
     title: (data.title as string) ?? slug,

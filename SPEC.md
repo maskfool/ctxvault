@@ -47,10 +47,27 @@ The engine never talks to a transport directly. It talks to a **StorageAdapter**
 
 ## Source of truth
 
-**Markdown files are the truth; SQLite is a derived index.** Every fact is a real file
-at `knowledge/<project>/<slug>.md`; the database can be rebuilt from stored documents
-(`ctx reindex`). This is what makes a vault syncable as a plain folder, and it is the
-invariant to preserve when adding storage features.
+**Markdown files are the truth; SQLite is a derived index.** Two trees:
+
+```
+~/.ctxvault/
+├── knowledge/<project>/<slug>.md              facts — same slug overwrites
+├── handoffs/<project>/<session>/<ts>--<id>.md snapshots — append-only
+└── ctxvault.db                                DERIVED. Deletable.
+```
+
+A handoff file carries the structured note in its frontmatter (lossless round-trip)
+and the verbatim transcript as its body. `ctx reindex` rebuilds the entire database
+from these files — delete `ctxvault.db` and the vault comes back.
+
+**This is the invariant to preserve when adding storage features.** It is what makes
+`ctx sync` a folder sync rather than database replication, and it is why handoffs had
+to become files: before they were, a synced vault carried the project's knowledge and
+silently dropped every "where was I".
+
+The one thing files can't restore is **vectors** — regenerating them needs an API
+call, so hybrid users re-embed on their next save. Keyword search is fully restored,
+which is exactly why it's the half that must be keyless.
 
 ## StorageAdapter interface
 
@@ -129,6 +146,12 @@ packet. **OKF is a shelf, not a compressor — never claim OKF saves tokens.**
 ## Memory tiers
 working = verbatim tail · episodic = HandoffNotes · semantic = OKF facts.
 
+### SYNC `ctx sync init <remote>` / `ctx sync`
+`git add -A` → commit → `pull --rebase` → push → `importFromFiles()` + `reindex()`.
+The vault's `.gitignore` excludes `ctxvault.db*`. Rebase, not merge: the history is a
+log of saves, and a merge bubble per sync reads terribly. A conflict is left in place
+for the human — it's markdown, not a binary.
+
 ## Hard rules
 - **Never write to stdout in the MCP server** — stdio transport uses stdout for the
   JSON-RPC protocol. Log to **stderr only**.
@@ -138,3 +161,6 @@ working = verbatim tail · episodic = HandoffNotes · semantic = OKF facts.
 - FTS5 has no upsert: delete-then-insert, inside one transaction.
 - The engine imports no model SDK on the save/resume path. If that changes, v2's
   central promise is gone.
+- Anything durable must be written as markdown, not only as a row. If a new kind of
+  memory can't survive `rm ctxvault.db && ctx reindex`, it isn't done.
+- Never track the database in the vault's git repo.
