@@ -345,9 +345,9 @@ docs/               # deep dives — start with CODE-TOUR.md
 ```
 
 **Deep dives:** [DATA-FLOW.md](docs/DATA-FLOW.md) · [CODE-TOUR.md](docs/CODE-TOUR.md) ·
-[SUMMARIZER.md](docs/SUMMARIZER.md) · [EMBEDDINGS.md](docs/EMBEDDINGS.md) ·
+[HANDOFF.md](docs/HANDOFF.md) · [SEARCH.md](docs/SEARCH.md) ·
 [OKF-FACTS.md](docs/OKF-FACTS.md) · [PLAYGROUND.md](docs/PLAYGROUND.md) ·
-[REGISTER.md](docs/REGISTER.md)
+[REGISTER.md](docs/REGISTER.md) · [PLAN-V2.md](docs/PLAN-V2.md)
 
 <!-- Add a real capture here — it's a submission gate.
      Suggested: a GIF of Save → Vault fills → Resume in Tool B → Search. Drop it in docs/assets/. -->

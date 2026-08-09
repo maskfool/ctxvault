@@ -1,10 +1,9 @@
 # CtxVault v2 — "Zero API Keys" Pivot Plan
 
 > **Status (2026-08-09):** Phases 1, 2, 3 and 5 are implemented and verified end to
-> end (engine, MCP server, `ctx` CLI, playground, README + SPEC). Remaining:
-> **Phase 4 — git sync**, and the `docs/*.md` deep dives, which still describe the
-> v1 architecture (SUMMARIZER.md and EMBEDDINGS.md are the stale ones; REGISTER.md
-> still shows API keys in its install blocks).
+> end — engine, MCP server, `ctx` CLI, playground, and all docs. `SUMMARIZER.md`
+> was replaced by [HANDOFF.md](HANDOFF.md) and `EMBEDDINGS.md` by
+> [SEARCH.md](SEARCH.md). **Remaining: Phase 4 — git sync.**
 
 **Goal:** CtxVault stops being an AI service (that summarizes with its own LLM) and becomes
 **a format + a place**: the calling agent does the thinking, CtxVault stores, searches,

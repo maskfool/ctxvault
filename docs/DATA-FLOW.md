@@ -10,102 +10,101 @@ this doc walks the *data*.
 
 ```mermaid
 flowchart TD
-    CLI["Claude Code · Codex · any MCP client"]
+    CLI["Claude Code · Codex · any MCP client<br/><b>writes the handoff itself</b>"]
 
     subgraph FRONT["🚪 FRONT DOOR — apps/mcp-server"]
         T["StdioServerTransport<br/><i>@modelcontextprotocol/sdk</i>"]
-        SRV["McpServer · 5 registered tools<br/><i>src/index.ts</i> · args validated by <b>zod</b>"]
+        SRV["McpServer · 6 registered tools<br/><i>src/index.ts</i> · args validated by <b>zod</b>"]
+        SCH["schema.ts — the handoff form<br/>every field carries a .describe()"]
         CFG["config.ts<br/>CTXVAULT_HOME → ~/.ctxvault"]
         T --> SRV
+        SRV -.advertises.-> SCH
         SRV -.reads.-> CFG
     end
 
     CLI <-->|"JSON-RPC over stdin/stdout"| T
-    SRV -->|"save / resume / search / listFacts / listSessions"| ENG
+    SRV -->|"save / resume / export / search / listFacts / listSessions"| ENG
 
     subgraph BRAIN["🧠 ENGINE — packages/engine/src/engine.ts"]
-        ENG["CtxEngine<br/>transport-agnostic, imports no SDK"]
+        ENG["CtxEngine<br/>transport-agnostic · <b>no model SDK on this path</b>"]
     end
 
-    ENG --> SEAM1
     ENG --> SEAM2
     ENG --> SEAM3
+    ENG --> EXP
 
-    subgraph SEAM1["seam: LLM"]
-        L1["VercelLLM<br/><i>llm/vercel.ts</i>"]
-        L2["ai/provider.ts<br/>CTXVAULT_MODEL"]
-        L3["Vercel AI SDK<br/>generateObject · generateText"]
-        L1 --> L2 --> L3
-        L3 --> LP["Anthropic · OpenAI · OpenRouter · compatible"]
-    end
-
-    subgraph SEAM2["seam: Embedder"]
+    subgraph SEAM2["seam: Embedder — OPTIONAL"]
         E1["VercelEmbedder · embedMany<br/><i>embed/vercel.ts</i>"]
-        E2["LocalEmbedder · FNV-1a, 256 dims<br/><i>embed/local.ts</i> — no key, no network"]
+        E2["ai/provider.ts<br/>CTXVAULT_EMBED_MODEL"]
+        E1 --> E2 --> EP["OpenAI · OpenRouter · compatible"]
     end
 
     subgraph SEAM3["seam: StorageAdapter"]
-        S1["SqliteAdapter<br/><i>better-sqlite3</i>, synchronous"]
-        S2["MemoryAdapter<br/>Map — Vercel playground"]
-        S1 --> DB[("~/.ctxvault/ctxvault.db<br/>snapshots · facts · vectors")]
+        S1["SqliteAdapter<br/><i>better-sqlite3 + FTS5</i>, synchronous"]
+        S2["MemoryAdapter<br/>Map + JS BM25 — Vercel playground"]
+        S1 --> DB[("~/.ctxvault/ctxvault.db<br/>snapshots · facts · text_docs · mem_fts · vectors")]
         S1 --> OKF[("knowledge/PROJECT/SLUG.md<br/>OKF via <i>gray-matter</i>")]
+    end
+
+    subgraph EXP["export/harness.ts"]
+        X1["upsertSection — one marked region, REPLACED"]
+        X1 --> X2[("CLAUDE.md · AGENTS.md")]
     end
 ```
 
-**The seams are the design.** `CtxEngine` depends on three interfaces —
-`LLM`, `Embedder`, `StorageAdapter` — and never on a concrete provider. That's
-what lets the same engine run over stdio locally and HTTP on Vercel, and what
-makes `--no-ai` a graceful degrade instead of a dead button.
+**The seams are the design.** `CtxEngine` depends on two interfaces —
+`Embedder` and `StorageAdapter` — and never on a concrete provider. That's what
+lets the same engine run over stdio locally and HTTP on Vercel.
+
+**Note what's missing: there is no LLM seam.** It was deleted in v2. The
+intelligence now sits *above* the front door, in the calling agent, which is why
+the top box says "writes the handoff itself."
 
 ---
 
-## 2. SAVE — transcript in, memory out
+## 2. SAVE — a filled-in form in, memory out
 
 ```mermaid
 flowchart TD
-    IN["save_context<br/>{project, transcript, session}"] --> ENG["CtxEngine.save<br/><i>engine.ts:60</i>"]
+    AG["your agent — fills schema.ts's form<br/>from the session in its context"]
+    AG --> IN["save_context<br/>{project, handoff, facts[], transcript?, session}"]
+    IN --> SLUG["slugify each fact slug<br/><i>lib/slug.ts</i> — untrusted → filename"]
+    SLUG --> ENG["CtxEngine.save<br/><i>engine.ts</i>"]
 
-    ENG --> HASLLM{"this.llm ?"}
-    HASLLM -->|"null · no key or noAi"| RAW["mode = 'raw'<br/>store transcript verbatim"]
+    ENG --> SNAP["store.saveSnapshot<br/>→ snapshots table"]
+    ENG --> MODE{"handoff given ?"}
+    MODE -->|no| RAW["mode = 'raw'<br/>keep the transcript, index its head"]
+    MODE -->|yes| OK["mode = 'agent'"]
 
-    subgraph INTEL["intelligence — best-effort, never fails the save"]
-        COND["condense<br/>over 20k chars → map-reduce<br/>15k chunks → 120-word digests"]
-        COND --> SUM["summarize → generateObject<br/>HandoffNoteGenSchema<br/><i>llm/vercel.ts</i>"]
-        COND --> FACT["extractFacts → generateObject<br/>output:'array', FactGenSchema"]
-        SUM --> V1["HandoffNoteSchema.parse<br/><i>zod re-validation</i>"]
-        FACT --> V2["slugify each slug<br/><i>lib/slug.ts</i> — untrusted → filename"]
-    end
+    SNAP --> HIDX["indexText kind='handoff'<br/>body = handoffSearchBody note<br/><i>lib/text.ts</i>"]
+    HIDX --> HEMB["[optional] embed → saveVector"]
 
-    HASLLM -->|"yes"| COND
-    SNAP["store.saveSnapshot<br/>→ snapshots table"]
-    V1 --> SNAP
-    RAW --> SNAP
-
-    SNAP --> IDX["embedTextFor note, transcript<br/><i>engine.ts:277</i>"]
-    IDX --> EMB["embedder.embed → saveVector<br/>kind='handoff', refId=snapshot.id"]
-
-    V2 --> FLOOP["for each fact"]
+    ENG --> FLOOP["for each fact"]
     FLOOP --> SF["store.saveFact — upsert by project+slug<br/>SqliteAdapter also writes the OKF file"]
-    SF --> FV["embed fact body → saveVector<br/>kind='fact', carries filePath"]
+    SF --> FIDX["indexText kind='fact'<br/>title ×10, tags ×5, body ×1"]
+    FIDX --> BATCH["[optional] embed ALL facts in ONE call<br/>→ saveVector each"]
 
-    EMB --> OUT["SaveResult<br/>{snapshotId, mode, factsExtracted, warning?}"]
-    FV --> OUT
+    HEMB --> OUT["SaveResult<br/>{snapshotId, mode, factsExtracted, warning?}"]
+    BATCH --> OUT
 ```
 
 **Pointers per box**
 
 | Box | Where | Notes |
 |---|---|---|
-| map-reduce | `llm/vercel.ts` | threshold 20k chars, `CHUNK_SIZE` 15k, digests capped at 400 output tokens |
-| structured output | `ai` v7 `generateObject` | the zod schema is a **native provider constraint**, not a prompt request |
-| schema re-validation | `types.ts` | `HandoffNoteSchema` / `FactsArraySchema` — the model's output is never trusted raw |
+| the form | `apps/mcp-server/src/schema.ts` | `.describe()` text is the only instruction the agent gets — treat it as a prompt |
+| constrained output | MCP `inputSchema` | tool args are schema-constrained by the *client's* model, the same mechanism `generateObject` used |
+| validation | `types.ts` | `HandoffNoteSchema` / `FactSchema` — input from a model is never trusted raw |
 | snapshot row | `storage/sqlite.ts` | `snapshots(id, project, session, created_at, raw_transcript, handoff_json)` |
 | fact upsert | `storage/sqlite.ts` | PK `(project, slug)` — same slug **overwrites**, no merge |
 | OKF file | `okf/okf.ts` | `matter.stringify` → frontmatter + body |
+| keyword index | `storage/sqlite.ts` | `text_docs` (durable) + `mem_fts` (FTS5). No upsert in FTS5 → delete-then-insert in one transaction |
 | vector row | `storage/sqlite.ts` | embedding stored as **JSON text**, not a blob |
 
-> Every intelligence step is wrapped in `try/catch` and pushes to `warnings[]`.
-> A model outage degrades to `mode: "raw"` — the save itself always succeeds.
+> Indexing is best-effort and wrapped in `try/catch` → `warnings[]`. A failed index
+> costs discoverability; the saved context itself always survives.
+>
+> **No network call happens anywhere in this diagram** unless an embedder is configured.
 
 ---
 
@@ -141,51 +140,91 @@ Priorities 1 and 2 are small and high-signal, so they go in whole. 3 and 4
 compete for whatever budget is left — which is why the token estimate
 (`chars / 4`) matters, and why it runs optimistic on code-heavy text.
 
+`rankFactsForHandoff` now works **without an embedder**, since keyword search is
+always available — so resume is fully ranked on a keyless install.
+
 ---
 
-## 4. SEARCH — retrieval and ranking
+## 4. EXPORT — the same packet, addressed elsewhere
+
+```mermaid
+flowchart TD
+    IN["export_context<br/>{project, target, dir?, budget?}"] --> P["CtxEngine.pack<br/><b>same packer as resume</b>"]
+    P --> T{"target"}
+    T -->|"text"| TXT["markdown packet → paste anywhere<br/>claude.ai · ChatGPT · Gemini"]
+    T -->|"claude / agents"| CMP["compact: true, budget 600<br/>no transcript tail"]
+    CMP --> UP["upsertSection<br/><i>export/harness.ts</i>"]
+    UP --> FILE[("CLAUDE.md / AGENTS.md<br/>one marked region, REPLACED")]
+```
+
+One packer serves both `resume` and `export`, so the MCP path and the paste path
+can't drift on what "enough context to continue" means.
+
+The file target is bounded **by construction**: a single marked region that is
+replaced on every write, never appended, with everything outside it preserved byte
+for byte. The vault grows; that file must not — otherwise CtxVault would recreate
+the always-loaded-context problem it exists to solve.
+
+---
+
+## 5. SEARCH — two indexes, one ranking
 
 ```mermaid
 flowchart LR
-    Q["search_memory<br/>{project, query, k=5}"] --> QE["embedder.embed [query]"]
-    QE --> POOL["pool = min 50, max k×5<br/><i>engine.ts:165</i>"]
-    POOL --> SC["store.search"]
+    Q["search_memory<br/>{project, query, k=5}"] --> POOL["pool = min 50, max k×5"]
 
-    subgraph SCAN["SqliteAdapter.search — brute force"]
-        R1["SELECT * FROM vectors WHERE project = ?"]
-        R2["JSON.parse each embedding_json"]
-        R3["cosineSimilarity<br/><i>lib/vector.ts</i>"]
-        R1 --> R2 --> R3
+    POOL --> LEX
+    POOL --> VEC
+
+    subgraph LEX["always — keyword"]
+        L1["ftsQuery: tokenize, drop stopwords<br/>quote + prefix → OR<br/><i>lib/text.ts</i>"]
+        L2["mem_fts MATCH<br/>bm25 title×10 tags×5 body×1"]
+        L3["normalizeBm25 → 0..1"]
+        L1 --> L2 --> L3
     end
 
-    SC --> SCAN
-    SCAN --> RR["rankHits<br/><i>retriever.ts</i>"]
-    RR --> F["0.6·similarity<br/>+ 0.3·recencyDecay 3-day half-life<br/>+ 0.1·sameProject"]
-    F --> TOP["slice k → SearchHit[]"]
+    subgraph VEC["only if configured — vector"]
+        V1["embedder.embed [query]"]
+        V2["scan vectors, filter by embedder id"]
+        V3["cosineSimilarity<br/><i>lib/vector.ts</i>"]
+        V1 --> V2 --> V3
+    end
+
+    L3 --> BL["blendHits<br/><i>retriever.ts</i>"]
+    V3 --> BL
+    BL --> F["hybrid: 0.45·lex + 0.30·cos + 0.25·recency<br/>keyword-only: 0.70·lex + 0.30·recency"]
+    F --> FLOOR["floor: lexical &gt; 0 OR similarity ≥ 0.3"]
+    FLOOR --> TOP["slice k → SearchHit[]"]
 ```
 
-Two things worth knowing about this path:
+Three things worth knowing about this path:
 
-- **No ANN index.** Every query loads and scans every vector in the project.
-  Fine at hundreds of vectors, and honest about it — but it's a linear scan.
-- **Recency is a first-class ranking signal.** A fresh near-match beats a stale
-  exact match by design; the 3-day half-life never zeroes an old memory out.
+- **The scan happens in SQLite, not in the context window.** Search cost in tokens
+  is flat regardless of how much history the vault holds.
+- **Both halves are best-effort.** If embeddings fail, keyword results still
+  answer. "Search is only lexical today" beats "search is down."
+- **The floor is honesty.** Without it, top-k returns *something* for any query,
+  and a weak hit presented as a result reads as an answer.
+
+Full detail: [SEARCH.md](SEARCH.md).
 
 ---
 
-## 5. The five MCP tools
+## 6. The six MCP tools
 
 | Tool | Engine call | Returns |
 |---|---|---|
 | `save_context` | `engine.save` | snapshot id, mode, fact count, any warning |
 | `resume_context` | `engine.resume` | the packed context block |
+| `export_context` | `engine.exportPacket` | paste-able packet, or a written file path |
 | `search_memory` | `engine.search` | ranked hits with score + file path |
 | `list_facts` | `engine.listFacts` | every OKF fact for a project |
 | `list_sessions` | `engine.listSessions` | sessions + snapshot counts |
 
 Tool *descriptions* are written as prompts — they tell the calling model **when**
-to reach for the tool, in its own decision-making language. That text is part of
-the product, not documentation.
+to reach for the tool, in its own decision-making language. Since v2 they also
+carry the instruction that the agent writes the summary itself. That text is part
+of the product, not documentation.
 
 > ⚠️ **Golden rule** (`apps/mcp-server/src/index.ts`): the transport owns stdout.
 > Every log goes to **stderr** via `console.error`. One stray `console.log`
@@ -193,33 +232,34 @@ the product, not documentation.
 
 ---
 
-## 6. Configuration — what changes behaviour
+## 7. Configuration — what changes behaviour
 
 | Variable | Default | Effect |
 |---|---|---|
-| `CTXVAULT_MODEL` | `anthropic:claude-opus-4-8` | `<provider>:<model-id>` — anthropic, openai, openrouter, compatible |
-| `CTXVAULT_EMBED_MODEL` | `openai:text-embedding-3-small` | separate, because Anthropic has no embeddings endpoint |
+| `CTXVAULT_EMBED_MODEL` | *(unset)* | set it to upgrade search from keyword to hybrid |
 | `CTXVAULT_BASE_URL` | — | required by `compatible:` — Ollama, Groq, vLLM, LM Studio |
 | `CTXVAULT_HOME` | `~/.ctxvault` | DB + knowledge dir location |
-| `CTXVAULT_NO_AI` / `--no-ai` | off | forces raw storage + LocalEmbedder |
 
-Resolution lives in `ai/provider.ts`; `hasApiKey` decides on-vs-off, and
-`canEmbed` is stricter — it also rejects providers with no embeddings API.
+That's the whole table now. There is no model to choose and no key to supply for
+the core flow — `canEmbed` in `ai/provider.ts` decides only whether search is
+hybrid, and it is stricter than a key check (it also rejects providers with no
+embeddings API, like Anthropic).
 
 ---
 
-## 7. Known lossy edges
+## 8. Known lossy edges
 
 Being explicit about where fidelity is spent, since this is memory software:
 
 1. **The raw transcript is stored but not indexed** when a HandoffNote exists —
-   `embedTextFor` prefers the note. Anything the summarizer dropped is
-   unreachable by search.
+   `handoffSearchBody` prefers the note. Anything the agent left out of the
+   handoff is unreachable by search.
 2. **Fact-body packing stops at the first fact that doesn't fit**
    (`break`, not `continue`) — one large fact can block smaller ones behind it.
-3. **`condense` runs twice** for >20k transcripts — once in `summarize`, once in
-   `extractFacts` — so the note and the facts derive from independent digests.
-4. **Resume reads only `getLatest`** — earlier snapshots in the same session
+3. **Resume reads only `getLatest`** — earlier snapshots in the same session
    contribute nothing unless their content became a durable fact.
-5. **Facts overwrite on slug collision** with no merge, so an evolving fact loses
+4. **Facts overwrite on slug collision** with no merge, so an evolving fact loses
    its prior nuance.
+5. **Handoff quality is now the agent's responsibility.** A lazy agent writes a
+   lazy handoff, and CtxVault has no way to tell — it can validate the shape, not
+   the substance. The mitigation is entirely in `schema.ts`'s field descriptions.

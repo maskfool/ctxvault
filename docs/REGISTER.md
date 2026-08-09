@@ -4,8 +4,9 @@ CtxVault is an MCP server. Any MCP-capable tool can launch it. It stores memory 
 `~/.ctxvault/` by default, so **all your tools share one vault** — that's what makes
 the handoff work.
 
-You can run the whole thing for **free**: either on OpenRouter's free model tier, or
-fully offline with Ollama. See [Zero-cost setups](#zero-cost-setups) below.
+**There is nothing to configure.** No API key, no model, no env block. CtxVault ships
+no LLM: your agent writes the handoff itself, and search is keyword-based out of the
+box. The only optional setting on this page upgrades search to hybrid.
 
 ---
 
@@ -40,15 +41,12 @@ That path is written as `<CTXVAULT_PATH>` throughout this doc. Substitute your o
 ### Claude Code
 
 ```bash
-claude mcp add ctxvault -- node <CTXVAULT_PATH>
+claude mcp add ctxvault -s user -- node <CTXVAULT_PATH>
 ```
 
-Verify inside Claude Code with `/mcp` — you should see `ctxvault` with five tools:
-`save_context`, `resume_context`, `search_memory`, `list_facts`, `list_sessions`.
-
-To pass API keys, either use `claude mcp add -e KEY=value ...` (check
-`claude mcp add --help` for your version's exact flag) or edit the generated config
-directly, as shown in [section 4](#4-choosing-a-model-and-passing-keys).
+Verify inside Claude Code with `/mcp` — you should see `ctxvault` with six tools:
+`save_context`, `resume_context`, `export_context`, `search_memory`, `list_facts`,
+`list_sessions`.
 
 ### Codex
 
@@ -58,10 +56,6 @@ Edit `~/.codex/config.toml`:
 [mcp_servers.ctxvault]
 command = "node"
 args = ["<CTXVAULT_PATH>"]
-
-[mcp_servers.ctxvault.env]
-CTXVAULT_MODEL = "openrouter:<model-id>"
-OPENROUTER_API_KEY = "sk-or-..."
 ```
 
 Restart Codex; the tools become available.
@@ -76,102 +70,79 @@ config of this shape:
   "mcpServers": {
     "ctxvault": {
       "command": "node",
-      "args": ["<CTXVAULT_PATH>"],
-      "env": {
-        "CTXVAULT_MODEL": "openrouter:<model-id>",
-        "OPENROUTER_API_KEY": "sk-or-..."
-      }
+      "args": ["<CTXVAULT_PATH>"]
     }
   }
 }
 ```
 
-## 4. Choosing a model and passing keys
+### The `ctx` CLI (optional, but useful)
+
+The same build ships a `ctx` binary for driving the vault by hand — including for
+tools that will never support MCP:
+
+```bash
+npm link --workspace=@ctxvault/mcp-server   # or call node <repo>/apps/mcp-server/dist/cli.js
+
+ctx export | pbcopy      # paste into claude.ai / ChatGPT / Gemini
+ctx export --to claude   # write a bounded block into CLAUDE.md
+ctx search "argon2"
+ctx list
+```
+
+## 4. Optional: upgrade search to hybrid
+
+Keyword search (SQLite FTS5/BM25) is always on and needs nothing. Setting an
+**embedding** model adds vector similarity on top, which mainly helps when your query
+paraphrases the stored note instead of sharing its terms.
 
 > ⚠️ **The MCP server does not read `.env` files.** It has no dotenv dependency. It's
 > a stdio process spawned by your MCP client, so it only sees the environment that
-> client hands it — which means **keys go in the `env` block of your client's config**
-> (the examples above). A `.env` in the repo root will be ignored. (The `.env.local`
-> file mentioned in [PLAYGROUND.md](PLAYGROUND.md) applies only to the Next.js
-> playground, which is a separate app.)
-
-Every model call goes through the [Vercel AI SDK](https://sdk.vercel.ai), so the
-provider is configuration, not code. Name a model as `<provider>:<model-id>`:
+> client hands it — which means any key goes in the `env` block of your client's
+> config. A `.env` in the repo root will be ignored. (The `.env.local` file mentioned
+> in [PLAYGROUND.md](PLAYGROUND.md) applies only to the Next.js playground, which is a
+> separate app.)
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `CTXVAULT_MODEL` | Summarizer + fact extractor | `anthropic:claude-opus-4-8` |
-| `CTXVAULT_EMBED_MODEL` | Embeddings for semantic search | `openai:text-embedding-3-small` |
+| `CTXVAULT_EMBED_MODEL` | Embeddings → hybrid search | *(unset — keyword only)* |
 | `CTXVAULT_HOME` | Where the vault lives | `~/.ctxvault` |
-| `CTXVAULT_NO_AI=1` | Force raw storage + lexical search | off |
 
-Providers and the key each one reads:
+Name a model as `<provider>:<model-id>`. Providers and the key each one reads:
 
 | Provider prefix | Key variable |
 |---|---|
-| `anthropic:` | `ANTHROPIC_API_KEY` |
 | `openai:` | `OPENAI_API_KEY` |
 | `openrouter:` | `OPENROUTER_API_KEY` |
 | `compatible:` | `CTXVAULT_API_KEY` + `CTXVAULT_BASE_URL` |
 
-`compatible:` covers anything speaking the OpenAI wire format — Ollama, Groq,
-Together, vLLM, LM Studio — with no extra dependency. For local servers the key is
-usually ignored; what enables the provider is `CTXVAULT_BASE_URL`.
-
-Note that `anthropic:` is never valid for `CTXVAULT_EMBED_MODEL` — Anthropic ships no
-embeddings endpoint, which is why the embedding model is configured separately.
-
-## Zero-cost setups
-
-### Option A — OpenRouter free tier (one key, nothing to install)
-
-OpenRouter serves both chat and embeddings, so a single key covers the whole product.
-
 ```json
 "env": {
-  "CTXVAULT_MODEL": "openrouter:<free-model-id>",
-  "CTXVAULT_EMBED_MODEL": "openrouter:openai/text-embedding-3-small",
-  "OPENROUTER_API_KEY": "sk-or-..."
+  "CTXVAULT_EMBED_MODEL": "openai:text-embedding-3-small",
+  "OPENAI_API_KEY": "sk-..."
 }
 ```
 
-Two things to watch:
-
-- **Pick a model that supports structured outputs.** The summarizer and fact
-  extractor use the AI SDK's `generateObject`, which hands the provider a schema as a
-  native structured-output constraint. A model that can't honour it will fail, and
-  CtxVault degrades to raw storage — you'll still have your transcript, but no
-  HandoffNote and no OKF facts. Filter for structured-output support on
-  [openrouter.ai/models](https://openrouter.ai/models) before choosing.
-- **Free tiers rate-limit hard.** Transcripts over 20k chars trigger a map-reduce
-  that issues several chunk requests in parallel, which can trip a 429 on a free key.
-  Saving more often, in smaller chunks, avoids it.
-
-### Option B — Ollama, fully offline (no key, no network, no limits)
+`compatible:` covers anything speaking the OpenAI wire format — Ollama, Groq,
+Together, vLLM, LM Studio — with no extra dependency. For local servers the key is
+usually ignored; what enables the provider is `CTXVAULT_BASE_URL`:
 
 ```bash
-ollama pull llama3.1
-ollama pull nomic-embed-text
-ollama serve
+ollama pull nomic-embed-text && ollama serve
 ```
-
 ```json
 "env": {
-  "CTXVAULT_MODEL": "compatible:llama3.1",
   "CTXVAULT_EMBED_MODEL": "compatible:nomic-embed-text",
   "CTXVAULT_BASE_URL": "http://localhost:11434/v1"
 }
 ```
 
-Nothing leaves your machine — worth knowing if your transcripts are confidential.
-Structured-output quality varies by model here too; if you get raw storage instead of
-HandoffNotes, try a larger model before assuming something is broken.
+`anthropic:` is never valid here — Anthropic ships no embeddings endpoint.
 
-### Option C — no keys at all
-
-Run it with nothing configured. `save_context` stores raw transcripts and
-`search_memory` uses a local hashing-based lexical embedder. You lose HandoffNotes,
-OKF facts, and semantic matching — but the handoff still works, and nothing errors.
+**Worth knowing before you bother:** on a vault of short, titled, tagged notes full of
+distinctive technical terms, keyword search is already strong, and your agent can
+re-query with different words when the first try misses. Hybrid is a real improvement
+on paraphrased queries, not a fix for something broken. See [SEARCH.md](SEARCH.md).
 
 ## 5. Verifying it works
 
@@ -179,30 +150,30 @@ The server logs one status line to **stderr** at boot (stdout is reserved for th
 JSON-RPC protocol). Find it in your client's MCP server logs:
 
 ```
-[ctxvault] CtxVault MCP server ready. DB: /Users/you/.ctxvault/ctxvault.db. AI: on (openrouter:...). Embeddings: ...
+[ctxvault] CtxVault MCP server ready. DB: /Users/you/.ctxvault/ctxvault.db. Search: keyword (BM25) — set CTXVAULT_EMBED_MODEL + key for hybrid.
 ```
 
-`AI: on (<model>)` means summarization is live. Anything else tells you why not:
+| Status | Meaning |
+|---|---|
+| `Search: keyword (BM25) — set …` | Default. Everything works; vector search is off |
+| `Search: hybrid (BM25 + <model>)` | Embeddings live |
+| `Search: keyword (BM25) — embedder unavailable` | Bad ref or missing key; search still works |
 
-| Status | Meaning | Fix |
-|---|---|---|
-| `off (no API key for <ref>)` | Provider key missing from the client's `env` block | Add the key variable from the table in section 4 |
-| `off (bad CTXVAULT_MODEL: …)` | Typo in the model ref | Use `<provider>:<model-id>` |
-| `off (--no-ai)` | Explicitly disabled | Remove `--no-ai` / `CTXVAULT_NO_AI` |
-
-If saves succeed but report *"Stored as raw text"* with 0 facts while AI shows `on`,
-the model reached the API but couldn't satisfy the structured-output schema — see the
-structured-outputs note under Option A.
+There is no "AI on/off" line any more, because there is no AI in the server. If a save
+reports `mode: "raw"` with 0 facts, the calling agent didn't fill in the `handoff`
+argument — ask it to save again and be explicit that it should write the summary.
 
 ## 6. Proving the handoff (the money demo)
 
 1. In **Claude Code**, do some work, then say: *"save this to ctxvault under project
-   `myapp`"*. Claude calls `save_context`.
+   `myapp`"*. Claude calls `save_context` and writes the handoff itself.
 2. Open **Codex**. Say: *"resume project `myapp` from ctxvault"*. Codex calls
    `resume_context` and continues the task.
 
 Because both tools write to the same `~/.ctxvault/ctxvault.db`, the second tool sees
 what the first one saved — even though they never talked to each other.
+
+For a tool without MCP, step 2 becomes `ctx export | pbcopy` and a paste.
 
 ## 7. Using a clean vault for demos
 

@@ -21,17 +21,23 @@ in the note; only durable knowledge becomes a fact.
 ## The files
 
 ```
+apps/mcp-server/src/
+└── schema.ts           # FactInput: what the AGENT is asked to extract ⭐
 packages/engine/src/
-├── llm/
-│   ├── prompts.ts      # + FACTS_SYSTEM: the fact-extraction prompt
-│   └── anthropic.ts    # + extractFacts(): strict JSON array, zod, retry once
 ├── okf/okf.ts          # write / read / list OKF markdown files ⭐
 ├── lib/slug.ts         # safe, stable slug → filename (security boundary) ⭐
 ├── storage/
-│   ├── sqlite.ts       # saveFact now ALSO writes the OKF file
+│   ├── sqlite.ts       # saveFact ALSO writes the OKF file
 │   └── memory.ts       # in-memory adapter — same interface, no files ⭐
-└── engine.ts           # save() extracts + persists + indexes facts
+└── engine.ts           # save() persists + indexes the facts it was handed
 ```
+
+> **Who extracts the facts changed in v2.** There is no fact-extraction prompt in
+> this repo any more, because there is no extractor: the calling agent picks the
+> durable knowledge out of its own session and passes it in. What used to be
+> `FACTS_SYSTEM` now lives as the `.describe()` text on `FactInput` in
+> `apps/mcp-server/src/schema.ts` — same words doing the same job, one model
+> fewer. See [HANDOFF.md](HANDOFF.md).
 
 ### `okf/okf.ts` — the Open Knowledge Format layer ⭐
 Each fact is a markdown file with YAML frontmatter:
@@ -55,7 +61,7 @@ git-versionable *without CtxVault running*. Remember the framing: **OKF is a she
 not a compressor** — it's durable, auditable storage, never a token-saving trick.
 
 ### `lib/slug.ts` — a security boundary, not just formatting ⭐
-A fact's slug becomes a **filename**, and the slug comes from an **LLM** — untrusted
+A fact's slug becomes a **filename**, and the slug comes from a **model** — untrusted
 input. `slugify` strips everything except `[a-z0-9-]`, so a slug can never contain
 `/` or `..` and escape the knowledge directory. Verified: `slugify("../../etc/passwd")`
 → `"etc-passwd"`. It also gives the stable-id property the overwrite rule needs.
@@ -68,61 +74,65 @@ filesystem** — file I/O is a storage concern, so it lives in the adapter. Omit
 ("OKF files → SQLite fact rows"), and the Vault UI is unchanged because it reads rows.
 
 ### `storage/memory.ts` — the second front door's storage ⭐
-The in-memory `StorageAdapter` for the stateless Vercel playground. ~100 lines of
-`Map`s and arrays — and the **entire engine** (summarizer, embedder, retriever, OKF
+The in-memory `StorageAdapter` for the stateless Vercel playground. ~150 lines of
+`Map`s and arrays — and the **entire engine** (indexer, retriever, packer, OKF
 facts) runs on it unchanged. This is the interface work paying off: "same engine,
 only the transport differs." Facts here have no files (`filePath` stays `null`); the
-Vault renders them from the in-memory rows.
+Vault renders them from the in-memory rows. It implements `searchText` with the
+JS BM25 from `lib/text.ts`, so keyword search works there too.
 
 ### `engine.ts` — the orchestration
-`save()` now does the full pipeline, every step best-effort so a model failure never
-costs the save:
-1. `summarize` → HandoffNote (episodic)
-2. `extractFacts` → Fact[] (semantic)
-3. `saveSnapshot`, then index the handoff vector
-4. for each fact: `saveFact` (adapter writes the OKF file + sets `filePath`) → embed
-   **title + tags + body** → `saveVector(kind: "fact", filePath)` so a search hit can
-   point at the readable file.
+`save()` runs the pipeline over what the agent handed in, every index step
+best-effort so a failure never costs the save:
+1. `saveSnapshot` (the HandoffNote lands here as `handoff_json`)
+2. index the handoff for keyword search — and embed it, *only* if an embedder exists
+3. for each fact: `saveFact` (the adapter writes the OKF file + sets `filePath`),
+   then `indexText` with **title ×10, tags ×5, body ×1** column weights so a search
+   hit can point at the readable file
+4. embed **all** facts in one batched call — never one call per fact
 
-> Note: we *embed* title+tags+body (the title/tags carry the search terms) but
-> *store* the body as the result's display text. Embedded text and displayed text
+> Note: we *index* title+tags+body (the title/tags carry the search terms) but
+> *store* the body as the result's display text. Indexed text and displayed text
 > are independent — a small choice that made fact search actually find things.
 
 ## The data flow
 
 ```
-save_context(transcript)
-   ├─ summarize ─────────► HandoffNote (episodic)  ──► snapshot + handoff vector
-   └─ extractFacts ──────► Fact[]
-                             │  for each fact:
+your agent picks the durable knowledge out of its own session
+   │
+save_context(handoff, facts[])
+   ├─ handoff ──────────► snapshot (+ keyword index, + vector if configured)
+   └─ facts[] ──────────► for each fact:
                              ├─► store.saveFact ──► knowledge/<proj>/<slug>.md  (+ row)
-                             └─► embed(title+tags+body) ──► fact vector (carries filePath)
+                             └─► indexText(title+tags+body) ──► BM25 (carries filePath)
+                          then: ONE batched embed call for all facts  [optional]
 
 search_memory("how do we hash passwords")
-   └─► matches the fact vector ──► returns the body + a pointer to the .md file
+   └─► matches the fact ──► returns the body + a pointer to the .md file
 ```
 
-## Three tiers of memory, now complete
+## Three tiers of memory
 
-- **working** — the last ~10 verbatim messages (in the raw transcript)
-- **episodic** — HandoffNotes (Phase 2.1)
-- **semantic** — OKF facts (this phase)
+- **working** — the verbatim transcript tail
+- **episodic** — HandoffNotes
+- **semantic** — OKF facts
 
 ## Running it
 
-With a Claude key, facts are extracted automatically on save; the files land in
-`~/.ctxvault/knowledge/<project>/`:
+Facts appear whenever your agent decides something is worth keeping. No key, no
+configuration — the files land in `~/.ctxvault/knowledge/<project>/`:
 
 ```bash
-export CTXVAULT_MODEL=anthropic:claude-opus-4-8   # any provider works
-export ANTHROPIC_API_KEY=sk-ant-...
 npm run build
-# save a real session, then:  ls ~/.ctxvault/knowledge/<project>/
+# save a real session from Claude Code / Codex, then:
+ls ~/.ctxvault/knowledge/<project>/
+ctx list                        # the same view, from a terminal
 # open a .md file — that's your AI's memory, readable and git-able
 ```
 
-`list_facts` (new MCP tool) shows what a project "knows." Without a key it's `--no-ai`
-mode: no facts (raw storage), and the CLI says so.
+`list_facts` shows what a project "knows" from inside an agent. If a save produces
+no facts, the agent judged nothing durable came out of the session — or it skipped
+the argument, which is worth asking it about.
 
 ## Quiz yourself
 

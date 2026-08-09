@@ -37,40 +37,44 @@ ctxvault/
 │   └── engine/           # THE BRAIN — all memory logic, zero transport code
 │       └── src/
 │           ├── types.ts              # shared data shapes (+ zod validators)
-│           ├── engine.ts             # save / resume / listSessions verbs
+│           ├── engine.ts             # save / resume / search / export verbs
 │           ├── index.ts              # the package's public exports
 │           ├── storage/
 │           │   ├── adapter.ts        # StorageAdapter INTERFACE (the seam)
-│           │   ├── sqlite.ts         # SQLite impl (local, durable, writes OKF files)
-│           │   └── memory.ts         # in-memory impl (Vercel playground) — Phase 2.3
+│           │   ├── sqlite.ts         # SQLite impl (durable, FTS5 index, writes OKF files)
+│           │   └── memory.ts         # in-memory impl (Vercel playground)
 │           ├── okf/okf.ts           # Open Knowledge Format files — see OKF-FACTS.md
-│           ├── retriever.ts          # ranks hits: similarity + recency blend
-│           ├── llm/                  # summarizer (Phase 2.1) — see SUMMARIZER.md
-│           │   ├── types.ts          # LLM interface (the model seam)
-│           │   ├── prompts.ts        # summarizer prompt (tune this)
-│           │   └── vercel.ts         # VercelLLM: any provider + zod-constrained output
-│           ├── embed/                # embeddings (Phase 2.2) — see EMBEDDINGS.md
+│           ├── retriever.ts          # blendHits: keyword + vector + recency
+│           ├── export/harness.ts     # CLAUDE.md / AGENTS.md block (bounded, replaceable)
+│           ├── embed/                # OPTIONAL vector search — see SEARCH.md
 │           │   ├── types.ts          # Embedder interface (the model seam)
-│           │   ├── vercel.ts         # VercelEmbedder (any AI SDK embedding model)
-│           │   └── local.ts          # LocalEmbedder (hashing fallback, no key)
+│           │   └── vercel.ts         # VercelEmbedder (any AI SDK embedding model)
 │           └── lib/
+│               ├── text.ts           # FTS query building + JS BM25 fallback
 │               ├── vector.ts         # cosine similarity + recency decay
 │               ├── tokens.ts         # token budgeting (chars/4 rule)
 │               └── slug.ts           # safe slug → filename (path-traversal guard)
 ├── apps/
-│   ├── mcp-server/        # LOCAL front door — stdio MCP server
+│   ├── mcp-server/        # LOCAL front door — stdio MCP server + the `ctx` CLI
 │   │   └── src/
-│   │       ├── index.ts   # registers the 5 MCP tools, boots the transport
+│   │       ├── index.ts   # registers the 6 MCP tools, boots the transport
+│   │       ├── schema.ts  # the handoff form the agent fills — see HANDOFF.md
+│   │       ├── cli.ts     # `ctx` — export / search / list / reindex
 │   │       └── config.ts  # where the vault lives on disk (~/.ctxvault)
 │   └── playground/        # HOSTED front door — Next.js on Vercel — see PLAYGROUND.md
 │       ├── app/           # three-pane UI + /api routes (save/resume/search/…)
-│       └── lib/           # per-session engine registry (MemoryAdapter)
+│       └── lib/           # per-session engine registry + distill.ts (the fake agent)
 └── docs/
     ├── CODE-TOUR.md       # ← you are here
     ├── REGISTER.md        # wire the server into Claude Code / Codex
-    ├── SUMMARIZER.md · EMBEDDINGS.md · OKF-FACTS.md · PLAYGROUND.md
-    └── (one teaching doc per phase)
+    ├── HANDOFF.md · SEARCH.md · OKF-FACTS.md · PLAYGROUND.md · DATA-FLOW.md
+    └── PLAN-V2.md         # the keyless pivot: what changed and why
 ```
+
+> **There is no `llm/` directory, and that's the headline.** v1 had one — a
+> summarizer and prompts that called our own model. v2 deleted it: the calling
+> agent writes the handoff, so the only prompt left in the codebase is the field
+> descriptions in `apps/mcp-server/src/schema.ts`. See [HANDOFF.md](HANDOFF.md).
 
 ---
 
@@ -154,14 +158,20 @@ tokenizer to decide what to drop; chars/4 is accurate enough and dependency-free
 
 ### `packages/engine/src/engine.ts` — the brain ⭐
 **What:** `CtxEngine`, the class every front door calls.
-**Contains:** three verbs:
-- `save({project, session, transcript})` → stores a snapshot, returns a receipt.
-- `resume({project, budget})` → gets the latest snapshot, packs it under budget, returns
-  the text to inject into the new tool.
-- `listSessions(project)`.
-**Phase status:** this is the **Phase-1 "dumb" version** — save stores raw text, resume
-replays it. The signatures are final; Phase 2 will slot in a summarizer, embeddings, and a
-priority-stack packer *without changing these method shapes*. That stability is the point.
+**Contains:** the verbs:
+- `save({project, session, handoff, facts, transcript?})` → validates the
+  agent-authored handoff, stores a snapshot, writes each fact as an OKF file,
+  indexes everything. Returns a receipt.
+- `resume({project, budget})` → gets the latest snapshot, packs it under budget,
+  returns the text to inject into the new tool.
+- `exportPacket({project, compact})` → the same packer, addressed to a tool that
+  has never heard of CtxVault.
+- `search(project, query, k)` → hybrid retrieval; `listFacts`, `listSessions`.
+
+**What it deliberately does NOT contain:** a model. `save` performs no inference —
+the calling agent already did the thinking, so this method's job is validation,
+durability and indexing. Constructor is `(store, embedder?)`, and the embedder is
+optional because keyword search lives in the storage adapter.
 
 ### `packages/engine/src/index.ts` — public API
 **What:** the curated export list.
@@ -249,19 +259,17 @@ The two processes never talk — they meet at `~/.ctxvault/ctxvault.db`.
 |---|---|---|
 | StorageAdapter interface | ✅ done | `storage/adapter.ts` |
 | SQLite adapter (durable) | ✅ done | `storage/sqlite.ts` |
-| Engine save/resume (raw) | ✅ done | `engine.ts` |
-| MCP server + 3 tools | ✅ done | `apps/mcp-server` |
+| MCP server + 6 tools | ✅ done | `apps/mcp-server` |
 | Cross-tool handoff proven | ✅ done | (smoke-tested) |
-| Summarizer → HandoffNote | ✅ done | `llm/` + `engine.ts` — see [SUMMARIZER.md](SUMMARIZER.md) |
-| `--no-ai` graceful fallback | ✅ done | `engine.ts` + `apps/mcp-server` |
-| Embeddings + semantic search | ✅ done | `embed/` + `retriever.ts` — see [EMBEDDINGS.md](EMBEDDINGS.md) |
-| `search_memory` MCP tool | ✅ done | `apps/mcp-server` |
-| Fact extractor + OKF writer | ✅ done | `llm/` + `okf/okf.ts` — see [OKF-FACTS.md](OKF-FACTS.md) |
+| Agent-authored handoff (no LLM) | ✅ done | `schema.ts` + `engine.ts` — see [HANDOFF.md](HANDOFF.md) |
+| Keyword search (FTS5/BM25) | ✅ done | `storage/sqlite.ts` + `lib/text.ts` — see [SEARCH.md](SEARCH.md) |
+| Hybrid search when a key exists | ✅ done | `embed/` + `retriever.ts` |
+| OKF writer | ✅ done | `okf/okf.ts` — see [OKF-FACTS.md](OKF-FACTS.md) |
 | In-memory adapter | ✅ done | `storage/memory.ts` |
-| `list_facts` MCP tool | ✅ done | `apps/mcp-server` |
 | Packer (priority-stack resume) | ✅ done | `engine.ts` `resume()` |
+| Export: paste packet + CLAUDE.md/AGENTS.md | ✅ done | `export/harness.ts` + `cli.ts` |
+| `ctx` CLI | ✅ done | `apps/mcp-server/src/cli.ts` |
 | **Memory engine complete** | ✅ | all of `packages/engine` |
 | Web-safe engine barrel | ✅ done | `packages/engine/src/web.ts` |
 | Vercel playground (3-pane UI + API) | ✅ done | `apps/playground` — see [PLAYGROUND.md](PLAYGROUND.md) |
-| Vercel deploy | ⏳ your step | settings in [PLAYGROUND.md](PLAYGROUND.md) |
-| README polish · deck · 3-min video | ⏳ Phase 3 packaging | — |
+| `ctx sync` — vault over your own git remote | ⏳ next | see [PLAN-V2.md](PLAN-V2.md) phase 4 |
