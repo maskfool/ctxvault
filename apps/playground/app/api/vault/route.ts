@@ -21,7 +21,9 @@ export async function GET(req: NextRequest) {
     return {
       aiEnabled: aiEnabled(),
       model: aiEnabled() ? modelRef() : null,
-      embedder: embeddingsEnabled() ? embedRef() : "local-hash-256",
+      // Search is keyword (BM25) out of the box; an embedding model upgrades it
+      // to hybrid. Neither is required for the vault to work.
+      search: embeddingsEnabled() ? `hybrid (BM25 + ${embedRef()})` : "keyword (BM25)",
       note: latest?.handoffNote ?? null,
       savedAt: latest?.createdAt ?? null,
       facts: facts.map((f) => ({

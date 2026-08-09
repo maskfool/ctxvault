@@ -5,11 +5,16 @@
  * the same thing" land near each other, which is what powers semantic search
  * (cosine similarity in lib/vector.ts).
  *
- * Same seam pattern as LLM and StorageAdapter: the engine depends on THIS
- * interface, never on a concrete provider. Two implementations ship:
- *   - VercelEmbedder → hosted, real semantics, any provider the AI SDK reaches
- *                      (OpenAI, OpenRouter, Ollama — see ai/provider.ts).
- *   - LocalEmbedder  → deterministic hashing fallback, no key, no network.
+ * Same seam pattern as StorageAdapter: the engine depends on THIS interface,
+ * never on a concrete provider. One implementation ships — VercelEmbedder, which
+ * reaches any provider the AI SDK does (OpenAI, OpenRouter, Ollama; see
+ * ai/provider.ts).
+ *
+ * Since v2 an embedder is OPTIONAL. Keyword search (BM25, in the storage
+ * adapter) is the default and needs no key, no network and no download; passing
+ * an embedder adds vector similarity on top and the retriever blends the two.
+ * So the question this seam answers is "is search hybrid today?", and the answer
+ * being "no" costs recall on paraphrases — never the feature itself.
  *
  * IMPORTANT invariant: the vectors you STORE and the query you SEARCH with must
  * come from the SAME embedder — different embedders produce different dimensions

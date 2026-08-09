@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { StorageAdapter } from "./adapter.js";
 import type {
   NewSnapshot,
+  NewTextDoc,
   NewVector,
   SearchHit,
   Session,
@@ -9,6 +10,7 @@ import type {
   StoredFact,
 } from "../types.js";
 import { cosineSimilarity } from "../lib/vector.js";
+import { bm25Rank } from "../lib/text.js";
 
 /**
  * memory.ts — the in-memory implementation of StorageAdapter.
@@ -26,6 +28,7 @@ export class MemoryAdapter implements StorageAdapter {
   private snapshots: Snapshot[] = [];
   private facts = new Map<string, StoredFact>(); // key: `${project}::${slug}`
   private vectors: (NewVector & { createdAt: string })[] = [];
+  private docs: (NewTextDoc & { createdAt: string })[] = [];
 
   async saveSnapshot(input: NewSnapshot): Promise<Snapshot> {
     const snap: Snapshot = {
@@ -66,6 +69,40 @@ export class MemoryAdapter implements StorageAdapter {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async indexText(doc: NewTextDoc): Promise<void> {
+    // Upsert by (project, kind, refId) — mirrors the SQLite primary key.
+    const i = this.docs.findIndex(
+      (d) => d.project === doc.project && d.kind === doc.kind && d.refId === doc.refId,
+    );
+    const stored = { ...doc, createdAt: new Date().toISOString() };
+    if (i >= 0) this.docs[i] = stored;
+    else this.docs.push(stored);
+  }
+
+  async searchText(project: string, query: string, k: number): Promise<SearchHit[]> {
+    // No FTS5 here, so we run the same BM25 in JS. At playground scale (a
+    // handful of facts per visitor) scanning is free.
+    const docs = this.docs.filter((d) => d.project === project);
+    return bm25Rank(
+      docs.map((d) => ({ haystack: `${d.title} ${d.tags.join(" ")} ${d.body}` })),
+      query,
+      k,
+    ).map(({ index, score }) => {
+      const d = docs[index];
+      return {
+        project: d.project,
+        kind: d.kind,
+        refId: d.refId,
+        filePath: d.filePath,
+        text: d.body,
+        createdAt: d.createdAt,
+        similarity: 0,
+        lexical: score,
+        score,
+      };
+    });
+  }
+
   async saveVector(vec: NewVector): Promise<void> {
     // Upsert by (project, kind, refId) — mirrors the SQLite unique index.
     const i = this.vectors.findIndex(
@@ -94,6 +131,7 @@ export class MemoryAdapter implements StorageAdapter {
           text: v.text,
           createdAt: v.createdAt,
           similarity,
+          lexical: 0,
           score: similarity,
         };
       });

@@ -1,10 +1,11 @@
 {
   "name": "@ctxvault/mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "bin": {
-    "ctxvault-mcp": "./dist/index.js"
+    "ctxvault-mcp": "./dist/index.js",
+    "ctx": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

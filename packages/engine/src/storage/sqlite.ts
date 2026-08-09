@@ -6,6 +6,7 @@ import type { StorageAdapter } from "./adapter.js";
 import type {
   HandoffNote,
   NewSnapshot,
+  NewTextDoc,
   NewVector,
   SearchHit,
   Session,
@@ -13,6 +14,7 @@ import type {
   StoredFact,
 } from "../types.js";
 import { cosineSimilarity } from "../lib/vector.js";
+import { bm25Rank, ftsQuery, handoffSearchBody, normalizeBm25 } from "../lib/text.js";
 import { writeOkfFile } from "../okf/okf.js";
 
 /**
@@ -27,10 +29,16 @@ import { writeOkfFile } from "../okf/okf.js";
  *    return already-resolved promises.
  *  - Vectors stored as JSON text + brute-force cosine in JS. At hackathon scale
  *    (hundreds of vectors) this is instant, and it keeps the schema readable.
+ *  - v2: text_docs + an FTS5 mirror. text_docs is the durable copy of what is
+ *    searchable; mem_fts is the index over it. Keeping both means the index can
+ *    always be rebuilt (`reindex()`), and that a SQLite build without FTS5 still
+ *    searches — just via the JS BM25 in lib/text.ts instead.
  */
 export class SqliteAdapter implements StorageAdapter {
   private db: Database.Database;
   private knowledgeDir?: string;
+  /** False on a SQLite build compiled without FTS5 — we then rank in JS. */
+  private fts = true;
 
   /**
    * @param dbPath  path to the SQLite file.
@@ -84,6 +92,21 @@ export class SqliteAdapter implements StorageAdapter {
         embedder       TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS idx_vec_project ON vectors(project);
+
+      -- v2: the keyword index's durable side. One row per searchable document,
+      -- upserted by identity so re-saving a fact replaces it instead of piling up.
+      CREATE TABLE IF NOT EXISTS text_docs (
+        project    TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        ref_id     TEXT NOT NULL,
+        file_path  TEXT,
+        title      TEXT NOT NULL DEFAULT '',
+        tags       TEXT NOT NULL DEFAULT '',
+        body       TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project, kind, ref_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_text_project ON text_docs(project);
     `);
     // Columns added after the first release. Backfill on databases created by an
     // earlier build (ensureColumn is a no-op if the column already exists).
@@ -110,6 +133,91 @@ export class SqliteAdapter implements StorageAdapter {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_vec_identity ON vectors(project, kind, ref_id);
     `);
+
+    // The FTS5 mirror. `content=''` would save space but forbids the ordinary
+    // DELETE we use to replace a doc, so we let FTS5 keep its own copy — the
+    // corpus here is a few hundred short notes, not a web crawl.
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(
+          project UNINDEXED, kind UNINDEXED, ref_id UNINDEXED,
+          title, tags, body,
+          tokenize = 'porter unicode61'
+        );
+      `);
+    } catch {
+      // No FTS5 in this build. searchText() falls back to JS BM25 over text_docs,
+      // so search still works — it just scans instead of using an index.
+      this.fts = false;
+    }
+
+    this.backfill();
+  }
+
+  /**
+   * Bring the v2 keyword index up to date on a vault created by v1 (or by a
+   * build where FTS5 was missing). Cheap and idempotent: it only runs when the
+   * index is empty but there is content to index.
+   */
+  private backfill() {
+    const docCount = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM text_docs`).get() as { n: number }
+    ).n;
+
+    if (docCount === 0) {
+      const facts = this.db.prepare(`SELECT * FROM facts`).all() as FactRow[];
+      for (const f of facts) {
+        this.putTextDoc({
+          project: f.project,
+          kind: "fact",
+          refId: f.slug,
+          filePath: f.file_path,
+          title: f.title,
+          tags: (JSON.parse(f.tags_json) as string[]).join(" "),
+          body: f.body,
+          createdAt: f.updated_at,
+        });
+      }
+      // Handoffs: index the note when we have one, else a bounded transcript head.
+      const snaps = this.db.prepare(`SELECT * FROM snapshots`).all() as SnapshotRow[];
+      for (const s of snaps) {
+        const note = s.handoff_json ? (JSON.parse(s.handoff_json) as HandoffNote) : null;
+        this.putTextDoc({
+          project: s.project,
+          kind: "handoff",
+          refId: s.id,
+          filePath: null,
+          title: note?.goal ?? `Session ${s.session}`,
+          tags: s.session,
+          body: note ? handoffSearchBody(note) : s.raw_transcript.slice(0, 8000),
+          createdAt: s.created_at,
+        });
+      }
+    } else if (this.fts) {
+      // text_docs has content but the FTS mirror doesn't (fresh upgrade, or an
+      // index dropped by hand) — rebuild the mirror only.
+      const ftsCount = (
+        this.db.prepare(`SELECT COUNT(*) AS n FROM mem_fts`).get() as { n: number }
+      ).n;
+      if (ftsCount === 0) this.reindex();
+    }
+  }
+
+  /** Rebuild the FTS mirror from text_docs. text_docs is the source of truth. */
+  reindex(): number {
+    if (!this.fts) return 0;
+    const rows = this.db.prepare(`SELECT * FROM text_docs`).all() as TextDocRow[];
+    const insert = this.db.prepare(
+      `INSERT INTO mem_fts (project, kind, ref_id, title, tags, body)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    this.db.transaction(() => {
+      this.db.exec(`DELETE FROM mem_fts`);
+      for (const r of rows) {
+        insert.run(r.project, r.kind, r.ref_id, r.title, r.tags, r.body);
+      }
+    })();
+    return rows.length;
   }
 
   /** Idempotently add a column to an existing table (SQLite has no IF NOT EXISTS for columns). */
@@ -216,6 +324,124 @@ export class SqliteAdapter implements StorageAdapter {
     return rows.map(rowToFact);
   }
 
+  // --- keyword index (FTS5 / BM25) ---------------------------------------
+
+  async indexText(doc: NewTextDoc): Promise<void> {
+    this.putTextDoc({
+      project: doc.project,
+      kind: doc.kind,
+      refId: doc.refId,
+      filePath: doc.filePath,
+      title: doc.title,
+      tags: doc.tags.join(" "),
+      body: doc.body,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  /** Upsert one document into text_docs and its FTS mirror. */
+  private putTextDoc(d: {
+    project: string;
+    kind: string;
+    refId: string;
+    filePath: string | null;
+    title: string;
+    tags: string;
+    body: string;
+    createdAt: string;
+  }) {
+    this.db
+      .prepare(
+        `INSERT INTO text_docs (project, kind, ref_id, file_path, title, tags, body, created_at)
+         VALUES (@project, @kind, @refId, @filePath, @title, @tags, @body, @createdAt)
+         ON CONFLICT(project, kind, ref_id) DO UPDATE SET
+           file_path=excluded.file_path, title=excluded.title, tags=excluded.tags,
+           body=excluded.body, created_at=excluded.created_at`,
+      )
+      .run(d);
+
+    if (!this.fts) return;
+    // FTS5 has no upsert: delete the old row, then insert. Both statements are
+    // in one transaction so a crash can't leave the mirror short a document.
+    this.db.transaction(() => {
+      this.db
+        .prepare(`DELETE FROM mem_fts WHERE project = ? AND kind = ? AND ref_id = ?`)
+        .run(d.project, d.kind, d.refId);
+      this.db
+        .prepare(
+          `INSERT INTO mem_fts (project, kind, ref_id, title, tags, body)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(d.project, d.kind, d.refId, d.title, d.tags, d.body);
+    })();
+  }
+
+  async searchText(project: string, query: string, k: number): Promise<SearchHit[]> {
+    const expr = ftsQuery(query);
+    if (!expr) return [];
+
+    if (this.fts) {
+      // Column weights: a hit in the title or tags counts for much more than one
+      // buried in the body — titles are what the agent named the knowledge.
+      const rows = this.db
+        .prepare(
+          `SELECT f.kind, f.ref_id, f.title, f.body,
+                  bm25(mem_fts, 0.0, 0.0, 0.0, 10.0, 5.0, 1.0) AS rank
+           FROM mem_fts f
+           WHERE mem_fts MATCH ? AND f.project = ?
+           ORDER BY rank
+           LIMIT ?`,
+        )
+        .all(expr, project, k) as FtsRow[];
+      const norms = normalizeBm25(rows.map((r) => r.rank));
+      return rows.map((r, i) => this.toHit(project, r.kind, r.ref_id, r.body, norms[i]));
+    }
+
+    // No FTS5: rank text_docs in JS. Same function, just without the index.
+    const docs = this.db
+      .prepare(`SELECT * FROM text_docs WHERE project = ?`)
+      .all(project) as TextDocRow[];
+    const ranked = bm25Rank(
+      docs.map((d) => ({ haystack: `${d.title} ${d.tags} ${d.body}` })),
+      query,
+      k,
+    );
+    return ranked.map(({ index, score }) => {
+      const d = docs[index];
+      return this.toHit(project, d.kind, d.ref_id, d.body, score);
+    });
+  }
+
+  /**
+   * Build a SearchHit, reading file_path/created_at from text_docs — the FTS
+   * mirror deliberately doesn't carry them (they are not searchable, and an
+   * unindexed FTS column is still a copy we'd have to keep in sync).
+   */
+  private toHit(
+    project: string,
+    kind: string,
+    refId: string,
+    body: string,
+    lexical: number,
+  ): SearchHit {
+    const meta = this.db
+      .prepare(
+        `SELECT file_path, created_at FROM text_docs WHERE project = ? AND kind = ? AND ref_id = ?`,
+      )
+      .get(project, kind, refId) as { file_path: string | null; created_at: string } | undefined;
+    return {
+      project,
+      kind: kind as SearchHit["kind"],
+      refId,
+      filePath: meta?.file_path ?? null,
+      text: body,
+      createdAt: meta?.created_at ?? "",
+      similarity: 0,
+      lexical,
+      score: lexical, // the retriever re-ranks with recency (+ cosine when hybrid)
+    };
+  }
+
   // --- vectors -----------------------------------------------------------
 
   async saveVector(vec: NewVector): Promise<void> {
@@ -265,6 +491,7 @@ export class SqliteAdapter implements StorageAdapter {
         text: r.text,
         createdAt: r.created_at,
         similarity,
+        lexical: 0, // vector-only hit; the blend fills this in if FTS also found it
         score: similarity, // the retriever re-ranks with recency + project boost
       };
     });
@@ -346,6 +573,25 @@ function rowToFact(r: FactRow): StoredFact {
     session: r.session,
     updatedAt: r.updated_at,
   };
+}
+
+interface TextDocRow {
+  project: string;
+  kind: string;
+  ref_id: string;
+  file_path: string | null;
+  title: string;
+  tags: string;
+  body: string;
+  created_at: string;
+}
+
+interface FtsRow {
+  kind: string;
+  ref_id: string;
+  title: string;
+  body: string;
+  rank: number;
 }
 
 interface VectorRow {
