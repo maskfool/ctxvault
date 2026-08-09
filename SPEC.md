@@ -1,6 +1,6 @@
 # CtxVault — Implementation Spec
 
-> One engine, two front doors. Read this before touching code.
+> One engine, several front doors. Read this before touching code.
 
 ## What it is
 
@@ -10,77 +10,131 @@ Code), hit your usage limit or want a different model, open another (Codex), typ
 SQLite file plus human-readable markdown files in **Google's Open Knowledge Format
 (OKF)** — so any agent, or a human, can read it without CtxVault running.
 
-## Architecture: one engine, two transports
+## The v2 contract: the agent thinks, the vault remembers
+
+v1 accepted a raw transcript and called its OWN LLM to summarize it and extract facts.
+That made an API key a hard requirement and paid twice to understand one session: once
+in the coding agent that lived through it, and again in us.
+
+**v2 inverts it.** The calling agent authors the `HandoffNote` and the facts — the MCP
+tool's input schema *is* that form — and CtxVault validates, stores, indexes, ranks,
+packs and exports. Consequences, all load-bearing:
+
+- **No API key, no model config, no per-call cost.** `npm run build` and go.
+- **Better source material.** The agent summarizing its own live session beats an
+  external model reading a pasted transcript.
+- **The tool description is the prompt.** Every field carries a `.describe()`; that
+  text is the only instruction the agent gets. Vague descriptions → vague handoffs →
+  failed resumes. Treat `apps/mcp-server/src/schema.ts` as prompt engineering.
+- **An embedding model is an optional upgrade**, never a requirement (see SEARCH).
+
+## Architecture
 
 ```
-        CtxVault Memory Engine  (packages/engine — shared TypeScript)
-        summarizer · extractor · embedder · retriever · packer · StorageAdapter
-                 │                                  │
-        MCP over stdio                        HTTP (Next.js API)
-                 │                                  │
-   LOCAL: Claude Code / Codex           HOSTED: Vercel playground
-   SQLite + OKF files on disk           in-memory Map per session
+        CtxVault Memory Engine  (packages/engine — shared TypeScript, NO model)
+        indexer · retriever · packer · exporter · StorageAdapter
+           │                    │                      │
+     MCP over stdio      markdown packet        HTTP (Next.js API)
+           │                    │                      │
+  LOCAL: Claude Code /   ANYWHERE: claude.ai,   HOSTED: Vercel playground
+  Codex / Cursor         ChatGPT, CLAUDE.md     in-memory Map per session
+  SQLite + OKF on disk
 ```
 
 The engine never talks to a transport directly. It talks to a **StorageAdapter**.
-- Local adapter = SQLite (+ OKF markdown files on disk).
+- Local adapter = SQLite + FTS5 (+ OKF markdown files on disk).
 - Hosted adapter = in-memory `Map` keyed by session (Vercel is stateless).
 
-Judge-facing line: *"same engine, only the transport differs — MCP over stdio locally,
-HTTP in the cloud."*
+## Source of truth
 
-## StorageAdapter interface (the enabler)
+**Markdown files are the truth; SQLite is a derived index.** Every fact is a real file
+at `knowledge/<project>/<slug>.md`; the database can be rebuilt from stored documents
+(`ctx reindex`). This is what makes a vault syncable as a plain folder, and it is the
+invariant to preserve when adding storage features.
+
+## StorageAdapter interface
 
 ```ts
 interface StorageAdapter {
-  saveSnapshot(input): Promise<Snapshot>      // raw transcript + optional handoff note
-  getLatest(project): Promise<Snapshot|null>  // newest snapshot for a project
-  saveFact(fact): Promise<Fact>               // upsert OKF fact by slug
-  listFacts(project): Promise<Fact[]>
-  saveVector(vec): Promise<void>              // embedding + payload
-  search(project, queryVec, k): Promise<...>  // cosine similarity top-k
+  saveSnapshot(input): Promise<Snapshot>      // transcript + agent-authored handoff
+  getLatest(project, session?): Promise<Snapshot|null>
+  listSnapshots(project, limit?): Promise<Snapshot[]>
+
+  saveFact(fact): Promise<StoredFact>         // upsert OKF fact by (project, slug)
+  listFacts(project): Promise<StoredFact[]>
+
+  indexText(doc): Promise<void>               // keyword index — ALWAYS available
+  searchText(project, query, k): Promise<SearchHit[]>   // BM25, lexical normalized 0..1
+
+  saveVector(vec): Promise<void>              // optional: only with an embedder
+  search(project, queryVec, k, embedder?): Promise<SearchHit[]>  // cosine top-k
+
   listSessions(project): Promise<Session[]>
+  close(): Promise<void>
 }
 ```
 
+Two search methods because there are two indexes over the same documents, identified in
+both by `(project, kind, refId)` so results can be merged.
+
 ## Engine flows
 
-### SAVE  `save_context(project, transcript)`
-1. Summarizer LLM → `HandoffNote` (strict JSON via zod, retry once, map-reduce if >20k chars).
-2. Fact extractor LLM → `facts[]`.
-3. OKF writer creates/overwrites `knowledge/<project>/<slug>.md` (frontmatter + body <150 words).
-4. Embed note + fact bodies → store vectors (fact vectors carry `file_path`).
+### SAVE `save_context(project, handoff, facts?, transcript?, session?)`
+1. Persist the snapshot (handoff + optional verbatim tail).
+2. Index the handoff for keyword search; embed it too if an embedder is configured.
+3. For each fact: write `knowledge/<project>/<slug>.md`, upsert the row, index it.
+4. Embed all facts in **one batched call** (never one call per fact).
 
-**Phase 1 does the DUMB version:** store the raw transcript as a snapshot, no LLM. Intelligence is layered in Phase 2.
+No handoff supplied → raw storage, `mode: "raw"`. Every index step is best-effort: a
+failure costs discoverability, never the saved context.
 
-### RESUME  `resume_context(project, budget=4000)`
-Priority order, truncate lowest first (chars/4 ≈ tokens):
-1. OKF index — titles + one-liners (~200 tok)
-2. Top 3–5 relevant OKF bodies
-3. Latest HandoffNote (full)
-4. Last ~10 verbatim messages
+### RESUME `resume_context(project, budget=4000, session?)`
+Priority stack, truncate lowest first (chars/4 ≈ tokens):
+1. Latest HandoffNote (force-included)
+2. Knowledge index — every fact's title + one-liner
+3. Top ~5 relevant fact bodies (ranked against the note's goal/next-step)
+4. Recent verbatim transcript tail — fills whatever budget remains
 
-### SEARCH  `search_memory(project, query)`
-Embed query → cosine over vectors → return HandoffNote sections / OKF bodies with dates.
+### EXPORT `export_context(project, target, dir?, budget?)`
+Same packer, different address. `target: "text"` returns a paste-able packet;
+`"claude"` / `"agents"` write a compact block (default 600-token budget, no transcript)
+into `CLAUDE.md` / `AGENTS.md`.
 
-### Retriever score
-`0.6·similarity + 0.3·recencyDecay(half-life 3d) + 0.1·sameProjectBoost`, always
-force-include the latest HandoffNote.
+**The block is bounded by construction:** one marked region, always REPLACED, never
+appended; everything outside the markers is preserved byte for byte. The vault grows;
+that file must not. This is the whole answer to "don't stuff your context file."
 
-## Token model (say this to judges)
-Store everything (free) → retrieve little (top-k) → compress what you inject
-(HandoffNote ≈ 60x semantic compression) → budget the packet. **OKF is a shelf, not a
-compressor — never claim OKF saves tokens.**
+### SEARCH `search_memory(project, query, k=5)`
+Keyword (BM25) always runs; vector search joins in when an embedder exists. Both halves
+are best-effort — whichever works still answers.
+
+```
+hybrid:        score = 0.45·lexical + 0.30·similarity + 0.25·recency
+keyword-only:  score = 0.70·lexical + 0.30·recency
+```
+
+`recency` = `recencyDecay(ageDays)`, 3-day half-life. **Relevance floor:** a hit must
+have `lexical > 0` or `similarity ≥ 0.3` — "no match" must be said, not implied by a
+low number.
+
+Never claim BM25 beats embeddings. The claim is that keyword is the right *default*
+(free, instant, strong on short titled technical notes) and that a key upgrades search
+rather than unlocking it.
+
+## Token model
+Store everything (free) → search inside the vault (costs zero context; the scan happens
+in SQLite, not in the model's window) → inject only the ranked slice → budget the
+packet. **OKF is a shelf, not a compressor — never claim OKF saves tokens.**
 
 ## Memory tiers
-working = last 10 verbatim · episodic = HandoffNotes · semantic = OKF facts.
-
-## Build phases
-- **Phase 1 (Day 1):** SQLite behind StorageAdapter + MCP server, stdio, save/resume RAW text. Register in Claude Code + Codex, prove a real handoff. ← highest priority, submittable-in-spirit.
-- **Phase 2 (Day 2):** summarizer, embedder+search, fact extractor+OKF writer, in-memory adapter, retriever+packer, `--no-ai` flag.
-- **Phase 3 (Day 3):** Next.js playground on Vercel, README, deck, 3-min video.
+working = verbatim tail · episodic = HandoffNotes · semantic = OKF facts.
 
 ## Hard rules
-- **Never write to stdout in the MCP server** — stdio transport uses stdout for the JSON-RPC protocol. Log to **stderr only**.
+- **Never write to stdout in the MCP server** — stdio transport uses stdout for the
+  JSON-RPC protocol. Log to **stderr only**.
 - SQLite in WAL mode, prepared statements.
 - OKF slug match = overwrite + bump date. No merge intelligence.
+- Fact slugs arrive from a model and become filenames — always `slugify()` them.
+- FTS5 has no upsert: delete-then-insert, inside one transaction.
+- The engine imports no model SDK on the save/resume path. If that changes, v2's
+  central promise is gone.

@@ -28,13 +28,14 @@ type Vault = {
   aiEnabled: boolean;
   /** "<provider>:<model-id>" when AI is on, null in demo mode. */
   model: string | null;
-  embedder: string;
+  /** How search is running: "keyword (BM25)" by default, hybrid with an embedding key. */
+  search: string;
   note: Note | null;
   savedAt: string | null;
   facts: Fact[];
   sessions: { session: string; snapshotCount: number; updatedAt: string }[];
 };
-type Hit = { kind: string; refId: string; filePath: string | null; text: string; score: number; similarity: number };
+type Hit = { kind: string; refId: string; filePath: string | null; text: string; score: number };
 
 const PANE_META: Record<Pane, { name: string; role: string; cls: string }> = {
   A: { name: "Tool A", role: "Claude-style · planning", cls: "a" },
@@ -104,18 +105,21 @@ export default function Page() {
     setBusy("save");
     setStatus({ text: "Summarizing & extracting facts…" });
     try {
-      const r = await post<{ mode: string; factsExtracted: number; warning: string | null; error?: string }>(
-        "/api/save",
-        { transcript: transcriptOf(active), session: "main" },
-      );
+      const r = await post<{
+        mode: string;
+        source: string;
+        factsExtracted: number;
+        warning: string | null;
+        error?: string;
+      }>("/api/save", { transcript: transcriptOf(active), session: "main" });
       if (r.error) {
         setStatus({ text: r.error, warn: true });
       } else {
         setStatus({
           text:
-            r.mode === "intelligent"
+            r.source === "agent"
               ? `Saved Tool ${active}'s context → HandoffNote + ${r.factsExtracted} fact(s).`
-              : `Saved Tool ${active}'s context (raw — no AI key set).`,
+              : `Saved Tool ${active}'s context (handoff built without a model — no AI key set).`,
           warn: Boolean(r.warning),
         });
       }

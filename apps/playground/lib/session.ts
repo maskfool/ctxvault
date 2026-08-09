@@ -3,15 +3,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   CtxEngine,
   MemoryAdapter,
-  LocalEmbedder,
   VercelEmbedder,
-  VercelLLM,
   languageModelRef,
   embeddingModelRef,
   hasApiKey,
   canEmbed,
   type Embedder,
-  type LLM,
 } from "@ctxvault/engine/web";
 
 /**
@@ -44,11 +41,13 @@ export function getEngine(sid: string): CtxEngine {
   let engine = engines.get(sid);
   if (!engine) {
     const store = new MemoryAdapter();
-    const llm: LLM | null = aiEnabled() ? new VercelLLM({ ref: modelRef() }) : null;
-    const embedder: Embedder = embeddingsEnabled()
+    // No LLM: the engine has none since v2. The agent's job (writing the
+    // handoff) is played by lib/distill.ts, on the playground's side of the line.
+    // No embedder either unless a key is configured — keyword search is built in.
+    const embedder: Embedder | null = embeddingsEnabled()
       ? new VercelEmbedder({ ref: embedRef() })
-      : new LocalEmbedder();
-    engine = new CtxEngine(store, llm, embedder);
+      : null;
+    engine = new CtxEngine(store, embedder);
     engines.set(sid, engine);
   }
   return engine;
@@ -71,10 +70,15 @@ export function resetEngine(sid: string): void {
 export const modelRef = () => languageModelRef();
 export const embedRef = () => embeddingModelRef();
 
-/** True when a real summarizer/fact-extractor is available (key present). */
+/**
+ * True when the playground can act as a real agent — chat replies, and writing
+ * the handoff in lib/distill.ts. Note what this does NOT gate: saving, resuming,
+ * searching and exporting all work without it, because the engine itself has no
+ * model. This flag is a property of the *demo*, not of CtxVault.
+ */
 export const aiEnabled = () => hasApiKey(modelRef());
 
-/** True when real embeddings are available; otherwise search uses LocalEmbedder. */
+/** True when embeddings can upgrade search to hybrid; keyword search is always on. */
 export const embeddingsEnabled = () => canEmbed(embedRef());
 
 // --- tiny per-session rate limiter -----------------------------------------

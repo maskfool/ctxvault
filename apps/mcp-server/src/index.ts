@@ -4,24 +4,30 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CtxEngine,
   SqliteAdapter,
-  VercelLLM,
   VercelEmbedder,
-  LocalEmbedder,
-  languageModelRef,
   embeddingModelRef,
-  hasApiKey,
-  parseModelRef,
-  type LLM,
+  canEmbed,
+  slugify,
+  writeHarnessFile,
   type Embedder,
+  type HarnessTarget,
 } from "@ctxvault/engine";
 import { z } from "zod";
 import { config } from "./config.js";
+import { HandoffInput, FactInput } from "./schema.js";
 
 /**
  * index.ts — the LOCAL front door: a stdio MCP server.
  *
- * An MCP client (Claude Code, Codex) launches this process and speaks JSON-RPC
- * over stdin/stdout. We register three tools that map straight onto the engine.
+ * An MCP client (Claude Code, Codex, Cursor) launches this process and speaks
+ * JSON-RPC over stdin/stdout. Every tool here maps straight onto the engine.
+ *
+ * V2: NO API KEY, NO MODEL, NO PER-CALL COST.
+ * The old server called its own LLM to summarize the transcript it was handed.
+ * But the agent calling `save_context` has just lived through that session — it
+ * already knows the goal, the decisions and what's next. So the tool's input
+ * schema IS the handoff form, and the agent fills it in using tokens the user
+ * has already paid for. This process only validates, stores, indexes and packs.
  *
  * ⚠️  GOLDEN RULE: never write to STDOUT. The transport owns stdout for the
  * protocol. Every log MUST go to stderr (console.error). One stray console.log
@@ -30,116 +36,112 @@ import { config } from "./config.js";
 
 const log = (...args: unknown[]) => console.error("[ctxvault]", ...args);
 
-// One engine, backed by the durable SQLite adapter.
-// The LLM is optional: with a key we summarize into HandoffNotes; with --no-ai
-// (or no key) we degrade to raw storage so a judge never sees a dead button.
-//
-// WHICH model is not decided here — CTXVAULT_MODEL / CTXVAULT_EMBED_MODEL pick
-// the provider (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible server)
-// and the AI SDK does the rest. All this file decides is on-vs-off.
-const noAi = process.argv.includes("--no-ai") || process.env.CTXVAULT_NO_AI === "1";
-const modelRef = languageModelRef();
+// Search is always available: keyword (BM25/FTS5) needs no key and no network.
+// An embedding model is a pure UPGRADE — configure CTXVAULT_EMBED_MODEL and its
+// provider key and search becomes hybrid. Nothing here is required to run.
 const embedRef = embeddingModelRef();
+let searchStatus: string;
+const embedder: Embedder | null = buildEmbedder();
 
-// Why the LLM is off matters: "no key" and "you typo'd CTXVAULT_MODEL" need
-// different fixes, and stdout is unavailable to say so — this is the one status
-// line the user sees.
-let aiStatus: string;
-const llm: LLM | null = buildLlm();
-
-function buildLlm(): LLM | null {
-  if (noAi) {
-    aiStatus = "off (--no-ai)";
+function buildEmbedder(): Embedder | null {
+  if (!canEmbed(embedRef)) {
+    searchStatus = "keyword (BM25) — set CTXVAULT_EMBED_MODEL + key for hybrid";
     return null;
   }
   try {
-    parseModelRef(modelRef);
+    const e = new VercelEmbedder({ ref: embedRef });
+    searchStatus = `hybrid (BM25 + ${e.id})`;
+    return e;
   } catch (err) {
-    aiStatus = `off (bad CTXVAULT_MODEL: ${(err as Error).message})`;
+    // A bad embed ref must never take the server down — search still works.
+    log(`embedder ${embedRef} unavailable (${(err as Error).message}); keyword search only`);
+    searchStatus = "keyword (BM25) — embedder unavailable";
     return null;
-  }
-  if (!hasApiKey(modelRef)) {
-    aiStatus = `off (no API key for ${modelRef})`;
-    return null;
-  }
-  aiStatus = `on (${modelRef})`;
-  return new VercelLLM({ ref: modelRef });
-}
-
-// Search always works: real embeddings when the configured provider has a key,
-// otherwise the local hashing fallback (lexical, no key, no network). --no-ai
-// forces local. A bad embed ref (e.g. anthropic:, which has no embeddings API)
-// must not take the server down — fall back and say so.
-const embedder: Embedder = buildEmbedder();
-
-function buildEmbedder(): Embedder {
-  if (noAi || !hasApiKey(embedRef)) return new LocalEmbedder();
-  try {
-    return new VercelEmbedder({ ref: embedRef });
-  } catch (err) {
-    log(`embedder ${embedRef} unavailable (${(err as Error).message}); using local fallback`);
-    return new LocalEmbedder();
   }
 }
 
 // knowledgeDir on → facts are written as human-readable OKF markdown files.
 const store = new SqliteAdapter(config.dbPath, { knowledgeDir: config.knowledgeDir });
-const engine = new CtxEngine(store, llm, embedder);
+const engine = new CtxEngine(store, embedder);
 
 const server = new McpServer({
   name: "ctxvault",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // --- save_context ----------------------------------------------------------
-// Descriptions are written as PROMPTS: they tell the model WHEN to reach for the
-// tool, in the model's own decision-making language.
+// The description is a PROMPT. It has two jobs: say WHEN to reach for the tool,
+// and make clear that the CALLER writes the summary — that's the v2 contract.
 server.registerTool(
   "save_context",
   {
     title: "Save working context",
     description:
-      "Save the current working context to CtxVault so you (or another AI tool " +
-      "like Codex or Gemini) can resume it later. Call this when you are about to " +
-      "hit a usage limit, when the user says they are switching to another AI tool, " +
-      "or at a natural stopping point in a task. Pass the recent conversation/work " +
-      "as the transcript.",
+      "Save the current working context to CtxVault so you — or another AI tool " +
+      "like Codex, Cursor or Gemini — can resume it later. Call this when you are " +
+      "about to hit a usage limit, when the user says they are switching tools or " +
+      "wrapping up, or at a natural stopping point in a task.\n\n" +
+      "YOU write the handoff: you have this session in your context, so distill it " +
+      "yourself from what actually happened — do not guess or pad. Also extract any " +
+      "durable knowledge worth keeping long after this session (decisions and why " +
+      "they won, conventions, gotchas) as `facts`; each becomes a markdown file the " +
+      "user can read, edit and commit. Extract 0-5 facts — only genuinely reusable " +
+      "ones, not a summary of the session.",
     inputSchema: {
       project: z
         .string()
-        .describe("Short project identifier, e.g. 'ctxvault' or 'case-smith-v-jones'."),
+        .describe("Short project identifier, e.g. 'ctxvault'. Use the repo/folder name so other tools resolve the same vault."),
+      handoff: HandoffInput.describe(
+        "The structured handoff: everything the next tool needs to continue this work.",
+      ),
+      facts: z
+        .array(FactInput)
+        .optional()
+        .describe("Durable knowledge from this session. Omit or leave empty if nothing is worth keeping."),
       transcript: z
         .string()
-        .describe("The recent working context to preserve: what was done, decided, and what's next."),
+        .optional()
+        .describe(
+          "Optional verbatim tail of the conversation, kept as backup detail behind the handoff. " +
+            "A few thousand characters at most — the handoff is the primary record.",
+        ),
       session: z
         .string()
         .optional()
-        .describe("Optional session/thread name. Defaults to 'main'."),
+        .describe("Optional session/thread name, for keeping parallel lines of work apart. Defaults to 'main'."),
     },
   },
-  async ({ project, transcript, session }) => {
+  async ({ project, handoff, facts, transcript, session }) => {
+    // The slug becomes a filename, and it arrived from a model — slugify it
+    // ourselves rather than trusting it.
+    const cleanFacts = (facts ?? []).map((f) => ({
+      ...f,
+      slug: slugify(f.slug || f.title),
+      tags: f.tags ?? [],
+    }));
+
     const result = await engine.save({
       project,
       session: session ?? "main",
+      handoff,
+      facts: cleanFacts,
       transcript,
     });
+
     log(
-      `saved snapshot ${result.snapshotId} (${result.savedChars} chars, mode=${result.mode}) for "${project}"` +
+      `saved snapshot ${result.snapshotId} (mode=${result.mode}, ${result.factsExtracted} fact(s)) for "${project}"` +
         (result.warning ? ` — ${result.warning}` : ""),
     );
-    const modeLine =
-      result.mode === "intelligent"
-        ? `Summarized into a HandoffNote + ${result.factsExtracted} durable OKF fact(s).`
-        : `Stored as raw text${result.warning ? "" : " (--no-ai mode)"}.`;
     return {
       content: [
         {
           type: "text",
           text:
             `✅ Saved context for project "${project}" (session "${result.session}").\n` +
-            `Snapshot ${result.snapshotId}, ${result.savedChars} chars. ${modeLine}\n` +
+            `Handoff stored + ${result.factsExtracted} durable fact(s) written as OKF markdown.\n` +
             (result.warning ? `⚠️  ${result.warning}\n` : "") +
-            `Open another AI tool and call resume_context with project "${project}" to continue.`,
+            `Open another AI tool and call resume_context with project "${project}" to continue, ` +
+            `or use export_context to paste this into a tool that doesn't have CtxVault.`,
         },
       ],
     };
@@ -155,7 +157,9 @@ server.registerTool(
       "Restore the working context for a project that was saved by CtxVault in a " +
       "previous session or a different AI tool. Call this at the START of a session " +
       "when the user says 'resume', 'pick up where I left off', or references earlier " +
-      "work in another tool. Returns a packed context you should read and continue from.",
+      "work done elsewhere. Returns a packed context — read it and continue from it. " +
+      "The vault holds every past session, but this returns only the relevant slice " +
+      "within a token budget, so it is safe to call at the top of any session.",
     inputSchema: {
       project: z.string().describe("The project identifier to resume."),
       budget: z
@@ -175,6 +179,78 @@ server.registerTool(
     log(`resume "${project}" → found=${result.found}, ~${result.estimatedTokens} tokens`);
     return {
       content: [{ type: "text", text: result.packed }],
+    };
+  },
+);
+
+// --- export_context --------------------------------------------------------
+server.registerTool(
+  "export_context",
+  {
+    title: "Export context for another tool",
+    description:
+      "Export the saved context as a self-contained markdown packet for a tool that " +
+      "does NOT have CtxVault installed — claude.ai, ChatGPT, Gemini, a fresh Cursor " +
+      "chat. Call this when the user says they want to continue somewhere else, wants " +
+      "something to paste, or asks to write the context into their project files.\n\n" +
+      "With target 'claude' or 'agents' it writes a compact, size-bounded block into " +
+      "CLAUDE.md / AGENTS.md instead of returning text. That block is REPLACED on every " +
+      "export and everything outside it is preserved, so those files never grow — " +
+      "durable knowledge stays in the vault, not in an always-loaded file.",
+    inputSchema: {
+      project: z.string().describe("The project identifier to export."),
+      target: z
+        .enum(["text", "claude", "agents"])
+        .optional()
+        .describe(
+          "'text' (default) returns the packet to paste. 'claude' writes CLAUDE.md, 'agents' writes AGENTS.md.",
+        ),
+      dir: z
+        .string()
+        .optional()
+        .describe("Directory for the CLAUDE.md/AGENTS.md write. Defaults to the current working directory."),
+      budget: z
+        .number()
+        .optional()
+        .describe("Approximate token budget. Default 4000 for text, 600 for a file target."),
+      session: z.string().optional().describe("Export a specific session. Defaults to the newest."),
+    },
+  },
+  async ({ project, target, dir, budget, session }) => {
+    const mode = target ?? "text";
+    const toFile = mode === "claude" || mode === "agents";
+
+    // A file target must stay small: it is re-read in EVERY future session.
+    const result = await engine.exportPacket({
+      project,
+      session,
+      budget: budget ?? (toFile ? 600 : 4000),
+      compact: toFile,
+    });
+
+    if (!result.found) {
+      return { content: [{ type: "text", text: result.packed }] };
+    }
+
+    if (!toFile) {
+      log(`export "${project}" → ~${result.estimatedTokens} tokens of text`);
+      return { content: [{ type: "text", text: result.packed }] };
+    }
+
+    const outDir = dir ?? process.cwd();
+    const written = writeHarnessFile(outDir, mode as HarnessTarget, result.packed);
+    log(`export "${project}" → ${written.action} ${written.path}`);
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `✅ ${written.action === "created" ? "Created" : "Updated"} ${written.path} ` +
+            `(~${result.estimatedTokens} tokens in the CtxVault block).\n` +
+            `The block is replaced on every export, so this file will not grow. ` +
+            `Any other AI tool that reads it will now start with this context.`,
+        },
+      ],
     };
   },
 );
@@ -211,17 +287,17 @@ server.registerTool(
   {
     title: "Search saved memory",
     description:
-      "Semantically search everything CtxVault has saved for a project — past " +
-      "handoff notes and decisions. Call this when the user asks 'what did we " +
+      "Search everything CtxVault has saved for a project — every past handoff and " +
+      "every durable fact, however old. Call this when the user asks 'what did we " +
       "decide about X', 'have I worked on Y before', or wants to recall an earlier " +
-      "choice. Matches on meaning, not just keywords.",
+      "choice. Searching is free and costs no extra context: the whole history is " +
+      "scanned in the vault and only the top matches come back.\n\n" +
+      "If nothing relevant comes back, retry once with different keywords — the " +
+      "index matches terms, so the words in the stored note matter.",
     inputSchema: {
       project: z.string().describe("The project identifier to search within."),
-      query: z.string().describe("What to look for, in natural language."),
-      k: z
-        .number()
-        .optional()
-        .describe("How many results to return. Default 5."),
+      query: z.string().describe("What to look for. Include the distinctive technical terms you expect to appear."),
+      k: z.number().optional().describe("How many results to return. Default 5."),
     },
   },
   async ({ project, query, k }) => {
@@ -230,13 +306,19 @@ server.registerTool(
     if (hits.length === 0) {
       return {
         content: [
-          { type: "text", text: `No memory matched "${query}" in project "${project}".` },
+          {
+            type: "text",
+            text:
+              `No memory matched "${query}" in project "${project}". ` +
+              `Try different keywords, or call list_facts to see what is stored.`,
+          },
         ],
       };
     }
     const blocks = hits.map((h, i) => {
-      const when = h.createdAt ? ` (saved ${h.createdAt})` : "";
-      return `### Result ${i + 1} — score ${h.score.toFixed(3)}, similarity ${h.similarity.toFixed(3)}${when}\n${h.text}`;
+      const when = h.createdAt ? ` · saved ${h.createdAt}` : "";
+      const where = h.filePath ? ` · ${h.filePath}` : "";
+      return `### Result ${i + 1} — ${h.kind}, score ${h.score.toFixed(3)}${when}${where}\n${h.text}`;
     });
     return { content: [{ type: "text", text: blocks.join("\n\n") }] };
   },
@@ -276,11 +358,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(
-    `CtxVault MCP server ready. DB: ${config.dbPath}. ` +
-      `AI: ${aiStatus}. ` +
-      `Embeddings: ${embedder.id}.`,
-  );
+  log(`CtxVault MCP server ready. DB: ${config.dbPath}. Search: ${searchStatus}.`);
 }
 
 main().catch((err) => {

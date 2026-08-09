@@ -4,11 +4,14 @@ import { z } from "zod";
  * types.ts — the shared data shapes for the whole engine.
  *
  * Two kinds of shape live here:
- *  1. zod schemas  → used to VALIDATE untrusted data (LLM JSON output, tool args).
+ *  1. zod schemas  → used to VALIDATE untrusted data (tool args from an agent).
  *  2. TS interfaces → used to describe rows we store/read.
  *
- * The LLM-facing shapes (HandoffNote, Fact) are zod schemas because in Phase 2 an
- * LLM produces them and we must not trust its JSON blindly — we parse + retry.
+ * HandoffNote and Fact are zod schemas because they arrive from OUTSIDE: since
+ * v2 the calling agent authors them and passes them into `save_context`, so they
+ * are untrusted input that must be parsed, not assumed. These same schemas are
+ * what the MCP server advertises as its tool input schema — the agent fills the
+ * form, we validate and store it. That is the whole v2 architecture in one line.
  */
 
 // ---------------------------------------------------------------------------
@@ -55,7 +58,7 @@ export const FactSchema = z.object({
 });
 export type Fact = z.infer<typeof FactSchema>;
 
-/** The fact extractor returns an array of these — validated in one shot. */
+/** A batch of facts from one save — validated in one shot. */
 export const FactsArraySchema = z.array(FactSchema);
 
 // A Fact once persisted: carries where it lives + when it was written.
@@ -98,9 +101,28 @@ export interface Session {
 }
 
 // ---------------------------------------------------------------------------
-// Vectors — embeddings for semantic search (Phase 2).
+// Search index. TWO indexes cover the same documents:
+//
+//   1. TEXT (FTS5/BM25)  — always on, no key, no network. The default.
+//   2. VECTORS (cosine)  — only when the user has configured an embedding model.
+//
+// A document is identified by (project, kind, refId) in both, so results can be
+// merged into one hybrid ranking (see retriever.ts).
 // ---------------------------------------------------------------------------
 export type VectorKind = "handoff" | "fact";
+
+/** One document offered to the keyword index. Mirrors NewVector, minus the maths. */
+export interface NewTextDoc {
+  project: string;
+  kind: VectorKind;
+  refId: string; // snapshot id or fact slug
+  filePath: string | null; // OKF path for facts
+  /** Weighted highest at query time — the fact title or the handoff goal. */
+  title: string;
+  tags: string[];
+  /** The searchable prose, and what search results display. */
+  body: string;
+}
 
 export interface NewVector {
   project: string;
@@ -124,7 +146,10 @@ export interface SearchHit {
   refId: string;
   filePath: string | null;
   text: string;
-  createdAt: string; // when the vector was stored — the retriever weights by recency
-  score: number; // final ranked score
-  similarity: number; // raw cosine, for debugging
+  createdAt: string; // when the doc was indexed — the retriever weights by recency
+  score: number; // final ranked score (hybrid blend)
+  /** Raw cosine. 0 when the doc came from the keyword index only. */
+  similarity: number;
+  /** Normalized BM25 (1 = best keyword match in this result set). 0 when vector-only. */
+  lexical: number;
 }
