@@ -6,6 +6,12 @@ You're deep in a task with Claude Code. You hit your usage limit. You open Codex
 type *"resume"* — and it already knows your goal, your decisions, what's half-done,
 and what to do next. No copy-paste. No re-explaining. That's CtxVault.
 
+![CtxVault: save a session in one AI tool, resume it in another](docs/assets/handoff.gif)
+
+<sub>Every line of terminal output above is real, captured from a running CtxVault
+MCP server — two independent processes, so the second tool genuinely starts with no
+memory of the first. Regenerate it with `tools/demo/`.</sub>
+
 <!-- After deploying, fill these in — they are submission gates: -->
 > 🔗 **Live playground:** [ctxvault.madebyshubham.in](https://ctxvault.madebyshubham.in/) &nbsp;·&nbsp; 🎥 **3-min demo:** _add your video link_
 
@@ -371,9 +377,8 @@ docs/               # deep dives — start with CODE-TOUR.md
 [OKF-FACTS.md](docs/OKF-FACTS.md) · [PLAYGROUND.md](docs/PLAYGROUND.md) ·
 [REGISTER.md](docs/REGISTER.md) · [PLAN-V2.md](docs/PLAN-V2.md)
 
-<!-- Add a real capture here — it's a submission gate.
-     Suggested: a GIF of Save → Vault fills → Resume in Tool B → Search. Drop it in docs/assets/. -->
-> _📸 Screenshot / GIF placeholder — add `docs/assets/handoff.gif` after a live run._
+<!-- Still to add: a screen recording of the real two-CLI handoff (Claude Code on one
+     side, Codex on the other) and a still of the playground's Vault panel. -->
 
 ## Roadmap
 

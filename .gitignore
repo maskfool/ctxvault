@@ -13,7 +13,8 @@ undefined/
 .env.local
 .DS_Store
 .vercel/
-docs/assets/
+# docs/assets/ is tracked: the README's hero GIF lives there, and an
+# ignored asset is a broken image on GitHub.
 
 # local AI-tool config (machine-specific paths; each dev registers their own)
 .claude/
