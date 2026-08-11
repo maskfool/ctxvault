@@ -63,6 +63,32 @@ def emit(img, ms=55):
     frames.append((img.copy(), ms))
 
 
+def fade(a, b, steps=6, ms=30):
+    """Cross-dissolve between two frames.
+
+    GIF has no tweening, so smoothness has to be drawn: each intermediate frame
+    is an alpha blend. Kept short — a long dissolve reads as lag, not polish.
+    """
+    for i in range(1, steps + 1):
+        emit(Image.blend(a, b, i / (steps + 1)), ms)
+
+
+BLANK = Image.new("RGB", (W, H), BG)
+
+
+def transition(a, b, ms=26):
+    """Scene change: dip through the background rather than cross-dissolve.
+
+    Cross-dissolving one wall of text into another ghosts — for a moment both
+    scripts are legible on top of each other and the frame reads as a glitch.
+    Dipping to black separates them cleanly, and doubles as a beat between
+    scenes so the viewer knows to re-read from the top.
+    """
+    fade(a, BLANK, steps=4, ms=ms)
+    emit(BLANK, 90)
+    fade(BLANK, b, steps=5, ms=ms)
+
+
 DOT = "\x00"  # line prefix meaning "draw a filled dot in this line's colour"
 
 
@@ -82,9 +108,10 @@ def draw_lines(d, lines, y0=TOP, limit=None):
     return y
 
 
-def scene(label, label_color, caption, prompt, typed, out_lines, hold=2600, type_chunk=3, gap=2):
+def scene(label, label_color, caption, prompt, typed, out_lines, hold=2600, type_chunk=2, gap=2):
     """Type a command, then reveal real output a line at a time."""
-    # typing
+    # typing — the empty prompt dissolves out of whatever was on screen before
+    first = None
     for n in range(0, len(typed) + 1, type_chunk):
         img, d = chrome(label, label_color)
         d.text((PAD_X, CAP_Y), caption, font=f_cap, fill=DIM)
@@ -93,16 +120,25 @@ def scene(label, label_color, caption, prompt, typed, out_lines, hold=2600, type
         d.text((px, TOP), typed[:n], font=f_reg, fill=FG)
         cx = px + d.textlength(typed[:n], font=f_reg)
         d.rectangle([cx + 1, TOP + 2, cx + 9, TOP + 18], fill=FG)
-        emit(img, 45)
+        if first is None:
+            first = img
+            if frames:
+                transition(frames[-1][0], img)
+        emit(img, 42)
 
-    # output, line by line
+    # output, line by line — each new line dissolves in over the previous frame
+    prev = None
     for k in range(1, len(out_lines) + 1):
         img, d = chrome(label, label_color)
         d.text((PAD_X, CAP_Y), caption, font=f_cap, fill=DIM)
         d.text((PAD_X, TOP), prompt, font=f_bold, fill=GREEN)
         d.text((PAD_X + d.textlength(prompt, font=f_bold), TOP), typed, font=f_reg, fill=FG)
         draw_lines(d, out_lines, TOP + LINE_H * gap, limit=k)
-        emit(img, 150 if k < len(out_lines) else 55)
+        blank = out_lines[k - 1][0].strip() == ""
+        if prev is not None and not blank:
+            fade(prev, img, steps=2, ms=26)
+        emit(img, 26 if blank else 96)
+        prev = img
 
     img, d = chrome(label, label_color)
     d.text((PAD_X, CAP_Y), caption, font=f_cap, fill=DIM)
@@ -110,6 +146,7 @@ def scene(label, label_color, caption, prompt, typed, out_lines, hold=2600, type
     d.text((PAD_X + d.textlength(prompt, font=f_bold), TOP), typed, font=f_reg, fill=FG)
     draw_lines(d, out_lines, TOP + LINE_H * gap)
     emit(img, hold)
+    return img
 
 
 def wrap(text, width=92):
@@ -228,21 +265,42 @@ scene(
 )
 
 # ---------------------------------------------------------------- end card
-img = Image.new("RGB", (W, H), BG)
-d = ImageDraw.Draw(img)
-d.text((PAD_X + 30, 150), "CtxVault", font=ImageFont.truetype(MONO, 46, index=1), fill=FG)
-d.text((PAD_X + 30, 214), "The handoff button for your AI tools", font=f_big, fill=BLUE)
-for i, t in enumerate([
-    "Zero API keys — your agent writes the handoff",
-    "Memory is markdown you can read, edit and commit",
-    "Works without MCP too: export and paste anywhere",
-    "Syncs over your own private git remote",
-]):
-    d.text((PAD_X + 34, 292 + i * 34), "▸", font=f_mid, fill=GREEN)
-    d.text((PAD_X + 62, 292 + i * 34), t, font=f_mid, fill=FG)
-d.text((PAD_X + 30, 470), "github.com/maskfool/ctxvault", font=f_mid, fill=DIM)
-d.text((PAD_X + 30, 498), "ctxvault.madebyshubham.in", font=f_mid, fill=DIM)
-emit(img, 4000)
+# Deliberately no URLs: nothing is public yet, and a link on screen that isn't
+# ready is worse than no link at all.
+end_bg = Image.new("RGB", (W, H), BG)
+
+card = [
+    ("Zero API keys — your agent writes the handoff", 292),
+    ("Memory is markdown you can read, edit and commit", 326),
+    ("Works without MCP too: export and paste anywhere", 360),
+    ("Syncs over your own private git remote", 394),
+]
+
+
+def end_card(n_items, title_alpha=1.0):
+    """The closing frame with the first n_items revealed."""
+    img = end_bg.copy()
+    d = ImageDraw.Draw(img)
+    d.text((PAD_X + 30, 150), "CtxVault", font=ImageFont.truetype(MONO, 46, index=1), fill=FG)
+    d.text((PAD_X + 30, 214), "The handoff button for your AI tools", font=f_big, fill=BLUE)
+    for t, y in card[:n_items]:
+        d.text((PAD_X + 34, y), "\u25b8", font=f_mid, fill=GREEN)
+        d.text((PAD_X + 62, y), t, font=f_mid, fill=FG)
+    return img
+
+
+title_only = end_card(0)
+transition(frames[-1][0], title_only, ms=30)
+emit(title_only, 260)
+
+prev = title_only
+for i in range(1, len(card) + 1):
+    nxt = end_card(i)
+    fade(prev, nxt, steps=2, ms=28)
+    emit(nxt, 240)
+    prev = nxt
+
+emit(prev, 3600)
 
 # ---------------------------------------------------------------- write
 os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
@@ -256,9 +314,21 @@ for img, ms in frames:
     else:
         merged.append([img, ms])
 
-pal = [im.quantize(colors=128, method=Image.MEDIANCUT) for im, _ in merged]
+# ONE palette for the whole animation, derived from a sample of frames.
+#
+# Quantizing each frame independently gives every frame its own local colour
+# table: the file grows, and the cross-dissolves shimmer as the palette shifts
+# underneath them. A single global table fixes both — and since this is flat UI
+# colour plus antialiased text, 64 entries is plenty.
+sample = merged[len(merged) // 3][0].copy()
+for im, _ in merged[:: max(1, len(merged) // 12)]:
+    sample.paste(im.resize((W // 4, H // 4)), (0, 0))
+palette = sample.quantize(colors=64, method=Image.MEDIANCUT)
+
+pal = [im.quantize(palette=palette, dither=Image.NONE) for im, _ in merged]
 durs = [ms for _, ms in merged]
-pal[0].save(gif, save_all=True, append_images=pal[1:], duration=durs, loop=0, optimize=True)
+pal[0].save(gif, save_all=True, append_images=pal[1:], duration=durs, loop=0,
+            optimize=True, disposal=1)
 total = sum(durs) / 1000
 print(f"{len(pal)} frames · {os.path.getsize(gif)/1024:.0f} KB · {total:.1f}s")
 print(gif)
