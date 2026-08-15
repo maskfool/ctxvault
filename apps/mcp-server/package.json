@@ -2,6 +2,7 @@
   "name": "@ctxvault/mcp-server",
   "version": "0.2.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "ctxvault-mcp": "./dist/index.js",

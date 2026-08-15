@@ -2,6 +2,7 @@
   "name": "ctxvault",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "The handoff button for AI tools — durable, local-first, open-standard memory across MCP clients.",
   "type": "module",
   "workspaces": [

@@ -1,82 +1,183 @@
 # CtxVault 🔁
 
-**The handoff button for your AI tools.**
+**One memory for every AI coding tool on your machine.**
 
-You're deep in a task with Claude Code. You hit your usage limit. You open Codex,
-type *"resume"* — and it already knows your goal, your decisions, what's half-done,
-and what to do next. No copy-paste. No re-explaining. That's CtxVault.
+Work in Claude Code. Hit your usage limit. Open Codex, say *"resume"* — and it
+already knows your goal, your decisions, what's half-done, and what to do next.
+No copy-paste. No re-explaining.
 
 ![CtxVault: save a session in one AI tool, resume it in another](docs/assets/handoff.gif)
 
-<sub>Every line of terminal output above is real, captured from a running CtxVault
-MCP server — two independent processes, so the second tool genuinely starts with no
-memory of the first. Regenerate it with `tools/demo/`.</sub>
+<sub>Every line above is real output from a running CtxVault MCP server — two
+separate processes, so the second tool truly starts with no memory of the first.</sub>
 
-<!-- After deploying, fill these in — they are submission gates: -->
-> 🔗 **Live playground:** [ctxvault.madebyshubham.in](https://ctxvault.madebyshubham.in/) &nbsp;·&nbsp; 🎥 **3-min demo:** _add your video link_
+> 🔗 **Live playground:** [ctxvault.madebyshubham.in](https://ctxvault.madebyshubham.in/)
 
 ---
 
 ## The problem
 
-Every AI coding tool forgets everything the moment you leave it.
+Every AI coding tool forgets everything when you close it.
 
-You plan a feature in one tool → hit a limit or want a different model → switch
-tools → the new one knows **nothing**. So you paste a wall of transcript and hope.
-And every tool keeps its own private memory, in its own format, in its own silo —
-none of it readable, portable, or yours.
+So you switch tools and paste a wall of transcript. The new tool misreads which
+approach you rejected, and confidently rebuilds something you already threw away.
 
-## What CtxVault does
+Losing context is annoying. **Badly re-explained context is expensive.**
 
-CtxVault is a **shared memory layer that sits between your AI tools**. Any
-MCP-capable tool can talk to it. It gives them all the same brain:
+## How you use it
 
+Two sentences. That's the whole product.
+
+**When you stop working:**
+
+> "save this to ctxvault"
+
+**When you start somewhere else:**
+
+> "resume project myapp from ctxvault"
+
+That's it. Any AI tool that speaks MCP can do both, and they all read the same
+memory.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/maskfool/ctxvault && cd ctxvault
+npm install
+npm run build
+node apps/mcp-server/dist/cli.js install all
 ```
-save_context     → your agent writes a structured handoff + durable facts
-resume_context   → give me everything I need to continue, within a token budget
-export_context   → a paste-able packet for tools that don't speak MCP
-search_memory    → what did we decide about X, across every past session?
-list_facts       → show me what this project "knows"
-list_sessions    → what threads of work are saved?
+
+Restart your AI tools. Done.
+
+`ctx install` writes the config for every tool it finds — Claude Code, Claude
+Desktop, Cursor, Codex, VS Code. It fills in the correct path for you, so there
+is nothing to copy by hand.
+
+It is safe to run: it **merges** into your config instead of replacing it. Other
+MCP servers and unrelated settings stay exactly as they were, and the file is
+backed up to `<file>.ctxvault-backup` first.
+
+```bash
+ctx install claude-code    # or: claude-desktop · cursor · codex · vscode · all
 ```
 
-Everything lives **on your machine**: two folders of plain markdown plus a SQLite
-index you can delete and rebuild. No cloud, no account, no server to run. Delete the
-folder and the memory is gone — it's yours.
+**Requirements:** Node 18+ and a C toolchain (macOS: Xcode command line tools),
+because SQLite compiles natively.
+
+### Try the handoff
+
+1. In **Claude Code**, do some work, then say *"save this to ctxvault"*
+2. In **Codex** (or Cursor, or VS Code), say *"resume project myapp from ctxvault"*
+
+The second tool continues where the first stopped. They never talked to each
+other. They just share one folder.
+
+---
+
+## What it works with
+
+One vault at `~/.ctxvault/`, reached three ways. All three run the same six tools
+from the same file, so they can never drift apart.
+
+| Your tool | Use | Example |
+| --- | --- | --- |
+| launches a program | `ctx install` | Claude Code, Cursor, Codex, VS Code, Claude Desktop |
+| takes a URL | `ctx serve` | browser clients, sandboxed apps, remote connectors |
+| has no MCP at all | `ctx export` | claude.ai, ChatGPT, Gemini |
+
+Most people only ever need the first row.
+
+### Browser and remote clients
+
+Some tools can't launch a program. They want a URL:
+
+```bash
+ctx serve                                      # http://127.0.0.1:7077/mcp
+ctx serve --token "$(openssl rand -hex 16)"    # require a token
+ctx install claude-code --http --token <TOKEN>
+```
+
+This is your memory on a port, so the defaults are strict: **localhost only**, an
+optional bearer token, and DNS-rebinding protection on. Nothing is exposed to
+your network.
+
+For Claude Desktop, add it under **Settings → Connectors → Add custom connector**
+(run `ctx install claude-desktop --http` to print the exact values).
+
+### Tools without MCP
+
+```bash
+ctx export | pbcopy        # paste into claude.ai, ChatGPT, Gemini
+ctx export --to claude     # write a block into CLAUDE.md
+ctx export --to agents     # …or AGENTS.md, for Codex
+```
+
+The `--to` block sits between markers and is **replaced** every time, never
+appended. So `CLAUDE.md` stays a small, current summary instead of growing
+forever. Anything outside the markers is untouched.
+
+> **Note:** browser tools like claude.ai and ChatGPT run on someone else's
+> servers, so they cannot read your disk. Paste is the only way there — and it
+> only goes one direction.
+
+---
 
 ## Zero API keys
 
-**CtxVault ships no model and calls no LLM.** Your agent already lived through the
-session and already understands it, so it writes the handoff itself — the tool's
-input schema *is* the form — using tokens you have already paid for. Search is
-keyword-based (SQLite FTS5/BM25) and needs no key either.
+**CtxVault ships no model and calls no LLM.**
 
-That means installing CtxVault does not add an API bill, a rate limit, or a second
-model to configure. `npm run build`, point your editor at it, done.
+Your agent already lived through the session, so it writes the handoff itself.
+The tool's input form *is* the schema it fills in, paid for with tokens you
+already spent. Search is keyword-based (SQLite FTS5/BM25) and needs no key
+either.
+
+So installing CtxVault adds no API bill, no rate limit, and nothing to configure.
 
 > Want semantic search too? Set one embedding model and search becomes hybrid
-> (BM25 + vectors). It's an upgrade, not a requirement.
+> (keywords + vectors). It's an upgrade, never a requirement.
 
-## Why it's different
+---
 
-| | CtxVault | Cloud memory services | Each tool's built-in memory |
-|---|---|---|---|
-| Live handoff **between different tools** | ✅ the whole point | ❌ | ❌ locked to one tool |
-| Needs its own API key / budget | ❌ **none** | ✅ | ✅ (inside your plan) |
-| Where memory lives | your disk | someone's cloud | your disk, but siloed |
-| Can you read/edit/git it? | ✅ plain markdown | rarely | partially |
-| Works with tools that lack MCP | ✅ via `export` | ❌ | ❌ |
-| Setup needed | `npm run build` | account + API | none |
+## Auto-capture: the save you don't have to remember
 
-Nobody else does live *session* handoff across tools — and nobody stores agent
-memory in files you can just open, grep, and commit.
+There's a hole in *"hit your limit, open another tool, resume"*: saving needs the
+agent to have a turn left, and the moment you most need it is the moment it can't
+respond.
 
-## ✨ The OKF part (our favorite bit)
+```bash
+ctx hook install     # Claude Code only, for now
+```
 
-Durable knowledge isn't buried in a database — every fact CtxVault learns is
-written as a markdown file in **OKF (Open Knowledge Format)**, an open,
-frontmatter-based knowledge format from Google's research on portable agent
-memory. One fact, one file:
+Claude Code now saves a snapshot right before it drops context, and when a
+session ends. It is **model-free** — it stores the tail of your transcript, it
+does not summarize. Nothing to fail, nothing to pay for.
+
+You get two layers:
+
+- the **handoff you asked for** — structured and curated, the good record
+- the **auto-capture** — raw, but always there
+
+They don't fight each other. An auto-capture is skipped when your handoff already
+covers everything in the transcript, so a raw dump can never bury a good summary.
+It's also limited to once every 5 minutes per project. Restored auto-captures are
+clearly labelled as raw notes, so the next agent knows what it's reading.
+
+```bash
+ctx hook status      # when each project was last auto-captured
+```
+
+**Still say "save this to ctxvault" when you can.** The hook is a safety net, not
+a substitute — a structured handoff is always better than a transcript.
+
+---
+
+## Your memory is just files
+
+Every fact is a markdown file in **OKF (Open Knowledge Format)**, an open
+frontmatter-based format for portable agent memory. One fact, one file:
 
 ```markdown
 ---
@@ -88,388 +189,194 @@ Chose Intl.DateTimeFormat over date-fns/moment — native, cross-browser,
 zero dependencies.
 ```
 
-What using OKF bought us, concretely:
+Most AI memory is a vector database: you can't read it, can't fix it, and it dies
+with the tool. Files change that:
 
-- **Readable without CtxVault.** Any human — or any other agent — can `cat` the
-  memory. Your project's knowledge outlives the tool that wrote it.
-- **Git-friendly.** Facts diff cleanly, get code-reviewed, travel with the repo.
-- **Editable.** Wrong fact? Open the file, fix it. Try that with a vector DB.
-- **A shelf, not a black box.** Decisions (`type: decision`), conventions,
-  gotchas — each typed and tagged, so `list_facts` reads like a project wiki
-  that wrote itself.
+- **Readable** without CtxVault. Your project's knowledge outlives the tool.
+- **Editable.** Wrong fact? Open the file and fix it.
+- **Reviewable.** Facts diff cleanly, so you can PR-review what your AI "learned".
+- **Syncable.** A folder of markdown syncs with `git push`.
 
-Find yours in `~/.ctxvault/knowledge/<project>/*.md`. Saved sessions get the same
-treatment in `~/.ctxvault/handoffs/<project>/<session>/*.md` — structured note in the
-frontmatter, transcript in the body. The database beside them is a **derived index**:
-`rm ctxvault.db && ctx reindex` restores the whole vault from these files.
+Find yours in `~/.ctxvault/knowledge/<project>/`. Sessions live in
+`~/.ctxvault/handoffs/<project>/<session>/`.
 
----
-
-## Quick start
-
-```bash
-git clone <this repo> && cd ctxvault
-npm install
-npm run build        # builds the engine + MCP server
-node apps/mcp-server/dist/cli.js install all
-```
-
-That's it. `ctx install` writes the config for every AI tool it finds on your
-Mac — Claude Code, Claude Desktop, Cursor, Codex, VS Code — using the absolute
-path of the build you just made, so there is no `<PATH>` to copy anywhere.
-
-It **merges**: your other MCP servers and unrelated settings are left exactly as
-they were, and the file is backed up to `<file>.ctxvault-backup` before the
-first write.
-
-```bash
-ctx install claude-code     # or: claude-desktop · cursor · codex · vscode · all
-```
-
-### Try the playground first (optional)
-
-```bash
-npm run playground    # → http://localhost:3111
-```
-
-Three panes: Tool A, the Vault, Tool B. Plan something in A, hit **Save context**,
-**Resume in Tool B**, then search for a decision.
-
-The playground needs a key for one thing only — *pretending to be your coding
-agent*, since it has no real one to borrow. The vault itself (save, resume,
-search, export) runs keyless here exactly as it does on your machine. See
-[docs/PLAYGROUND.md](docs/PLAYGROUND.md).
+The database next to them is only an index. `rm ctxvault.db && ctx reindex`
+rebuilds everything from the files.
 
 ---
 
-## Everywhere on your Mac
+## One vault, every machine
 
-One vault at `~/.ctxvault/`, reached three different ways. Every route runs the
-same six tools from the same file (`apps/mcp-server/src/tools.ts`), so the
-contract cannot drift between them.
-
-| Route | For | Command |
-| --- | --- | --- |
-| **stdio MCP** | tools that launch a process: Claude Code, Claude Desktop, Cursor, Codex, VS Code | `ctx install <client>` |
-| **HTTP MCP** | tools that take a URL: browser clients, sandboxed apps, remote connectors | `ctx serve` |
-| **CLI / paste** | tools with no MCP at all: claude.ai, ChatGPT, Gemini | `ctx export` |
-
-### 1. Local tools (stdio)
+Sync usually means someone else runs a server and holds your memory. Not here —
+your vault is already a folder, so it travels on **your own private git repo**:
 
 ```bash
-ctx install all
+ctx sync init git@github.com:you/my-vault.git
+ctx sync                                        # commit · pull · push
 ```
 
-Then `/mcp` inside Claude Code lists `ctxvault` with 6 tools. Claude Desktop
-needs a full quit (⌘Q) — it only reads its config at launch.
+Laptop, desktop, a teammate — same memory. No account, no server.
 
-### 2. Browser and desktop clients (HTTP)
+The database is not synced (it's rebuilt on arrival), so there are no binary
+merge conflicts. When a conflict does happen, it's a markdown file you can open
+and fix.
 
-Some clients can't spawn a process; they want a URL. Give them one:
-
-```bash
-ctx serve                            # http://127.0.0.1:7077/mcp
-ctx serve --token "$(openssl rand -hex 16)"   # require a bearer token
-```
-
-Then point a client at it:
-
-```bash
-ctx install claude-code --http --token <TOKEN>
-```
-
-For Claude Desktop, add it by hand under **Settings → Connectors → Add custom
-connector** — Desktop takes remote servers through its UI, not its config file
-(`ctx install claude-desktop --http` prints the exact values to paste).
-
-`ctx serve` is deliberately boring about safety, because this is your memory on
-a port:
-
-- binds **127.0.0.1 only** — never a LAN address
-- optional bearer token, compared in constant time
-- **DNS-rebinding protection on**, so a page you visit can't POST to your vault
-- **stateless** — one shared engine, a fresh server per request, no session state
-  to leak between clients
-
-One caveat it will tell you about: over HTTP, `export_context --target claude`
-can't know which directory you're in, so it asks for an explicit `dir` instead of
-writing `CLAUDE.md` somewhere surprising.
-
-### 3. Everything else
-
-`ctx export` renders the same packet as plain markdown — see
-[Take it anywhere](#take-it-anywhere--even-to-tools-without-mcp) below.
-
-> No `env` block anywhere — that's the point. If you later add an embedding model
-> for hybrid search, its key goes in the client's `env` (the MCP server only sees
-> the environment its client hands it; a repo `.env` is ignored). Details:
-> [docs/REGISTER.md](docs/REGISTER.md).
+> ⚠️ Handoffs can contain transcript text, and transcripts sometimes contain
+> secrets you pasted. Use a **private** repo.
 
 ---
 
-## Auto-capture: the save that doesn't need a turn
+## Project names
 
-There's a hole in "you hit your usage limit, open another tool, type resume":
-`save_context` needs the agent to have a turn left to write the handoff, and the
-moment you most need the save is exactly the moment it can't produce one.
+The project name comes from three places that disagree: the CLI uses your folder
+name, the hook uses your folder name, and an *agent* uses whatever you said out
+loud.
 
-So the vault stops depending on the agent's cooperation:
-
-```bash
-ctx hook install     # Claude Code: PreCompact + SessionEnd
-```
-
-Claude Code now runs CtxVault right before it discards context and when a session
-ends. The hook is **model-free** — it summarizes nothing, it slices the tail of
-the transcript and stores it. No key, no network, nothing to fail.
-
-Two tiers, not one:
-
-- the **agent-authored handoff** stays the good record — structured, curated
-- the **auto-capture** is the floor under it — raw, but always there
-
-They don't fight. An auto-capture stands down if the agent wrote a real handoff
-in the last 30 minutes, so a raw dump can never arrive later and shadow a
-curated one. And it's throttled to once per 5 minutes per project. Resumed
-auto-captures are labelled as raw evidence, not as a summary, so the next agent
-knows what it's reading.
+So `CtxVault`, `ctxvault` and `CTXVAULT` all resolve to the same vault. Case and
+punctuation don't matter.
 
 ```bash
-ctx hook status      # when each project was last auto-captured
+ctx projects        # the real name of every project you've saved
 ```
 
-All tools share one vault at `~/.ctxvault/` — that's exactly what makes the
-handoff work.
+Word breaks are *not* guessed — `myapp` and `my app` stay separate. That's what
+`ctx projects` is for.
+
+Upgrading an older vault? `ctx reindex` fixes old names in place. Nothing is
+duplicated, nothing is lost.
 
 ---
 
-## One folder, one memory — however you spell it
-
-The project name arrives from three places that disagree: the CLI uses your
-folder name, the auto-capture hook uses your folder name, and an *agent* uses
-whatever you said out loud. So `CtxVault`, `ctxvault` and `CTXVAULT` all resolve
-to the same vault — case and punctuation are normalised on both the save and the
-lookup path.
+## Commands
 
 ```bash
-ctx projects        # the canonical name of every project in your vault
+ctx install <client|all>    # set up an AI tool (add --http for a URL client)
+ctx serve                   # HTTP MCP server for browser/remote clients
+ctx hook install            # auto-capture in Claude Code
+ctx projects                # what have I saved, and under what name?
+ctx list                    # what does this project know?
+ctx sessions                # saved threads of work
+ctx search "argon2"         # search your memory from the terminal
+ctx export                  # print a paste-able context packet
+ctx sync                    # push the vault to your own git remote
+ctx reindex                 # rebuild the database from the markdown
 ```
-
-The key is always exactly the directory holding that project's files, so what
-`ctx projects` prints is what's on disk. Word breaks are *not* guessed: `myapp`
-and `my app` remain separate projects, which is why the command exists.
-
-Upgrading an older vault? `ctx reindex` rewrites legacy keys in place from the
-markdown — nothing is duplicated and nothing is lost.
-
-### Try the handoff
-
-1. In **Claude Code**: do some work, then say
-   *"save this to ctxvault under project myapp"*
-2. In **Codex** (or Cursor, or VS Code): say
-   *"resume project myapp from ctxvault"*
-
-Tool #2 continues where tool #1 stopped. They never talked to each other — they
-just share the vault.
-
----
-
-## Take it anywhere — even to tools without MCP
-
-Not every tool speaks MCP, and you shouldn't have to care. `export_context`
-renders the same packet as plain markdown:
-
-```bash
-ctx export | pbcopy          # paste into claude.ai, ChatGPT, Gemini, anywhere
-ctx export --to claude       # write a block into CLAUDE.md
-ctx export --to agents       # …or AGENTS.md, for Codex
-ctx search "argon2"          # query the vault from a terminal
-ctx list                     # what does this project know?
-ctx projects                 # what have I actually saved, and under what name?
-```
-
-The `--to claude` / `--to agents` block lives between markers and is **replaced**
-on every export, never appended — so those files stay a small current-state card
-instead of growing forever. Everything outside the markers is left untouched.
-
-## One vault, every machine — on your own git remote
-
-"Continue anywhere" usually means someone else runs a sync service and holds your
-memory. It doesn't have to. The vault is already a folder of markdown, so:
-
-```bash
-ctx sync init git@github.com:you/my-vault.git   # a private repo you own
-ctx sync                                        # commit · pull --rebase · push
-```
-
-Laptop, desktop, Codespaces, a teammate — same memory, no account, no server, no
-one else's disk. The `.db` is **not** synced: it's a derived index, and
-`ctx reindex` rebuilds it from the markdown on the other side. Delete the
-database entirely and the vault comes back intact — that's the invariant.
-
-Conflicts stay rare by design: one file per fact, and handoffs are append-only.
-When one does happen, it's a markdown file you can just open and fix.
-
-## Not another bloated CLAUDE.md
-
-The advice going around is "keep CLAUDE.md minimal, it's poisoning your context."
-That advice is right, and it's the problem CtxVault is built around.
-
-CLAUDE.md is loaded **in full, every session, relevant or not** — with no budget,
-no ranking, and nothing that ever expires. CtxVault inverts all three:
-
-| | CLAUDE.md | CtxVault |
-|---|---|---|
-| Holds | permanent rules ("run tests with X") | working state + what the project learned |
-| Loaded | always, entirely | on demand, ranked, inside a token budget |
-| Expiry | never — it only accumulates | newest handoff wins; same-slug facts update in place; ranking decays with age |
-| Cost of a long history | grows every context window | flat — the search runs in SQLite, not in your context |
-
-Memory is unlimited. What enters the context window is not.
-
-## Search: free by default, better if you want
-
-Keyword search (SQLite **FTS5 / BM25**) is always on — no key, no network, no
-model download. On this corpus it's genuinely strong: a few hundred short,
-titled, tagged notes full of distinctive technical terms is exactly what BM25 is
-good at, and the calling agent can re-query with different words when the first
-try misses.
-
-Add an embedding model and search becomes **hybrid** — keyword and vector results
-are merged, and a document both halves agree on ranks highest:
-
-```bash
-CTXVAULT_EMBED_MODEL=openai:text-embedding-3-small     # or openrouter:…, or a
-CTXVAULT_EMBED_MODEL=compatible:nomic-embed-text       # local Ollama, no key
-CTXVAULT_BASE_URL=http://localhost:11434/v1
-```
-
-We don't claim BM25 beats embeddings — hybrid ranks best, and vectors catch
-paraphrases keywords miss ("date formatting library" → a note that says
-`Intl.DateTimeFormat`). We claim keyword is the right *default*, because a
-default that costs money is a default most people never turn on.
 
 ---
 
 ## How it works
 
-One engine, two front doors. The memory brain never knows how it's being called:
+One engine, several front doors. The memory brain never knows how it was called.
 
 ```mermaid
 flowchart TD
     AG["🤖 your agent — writes the handoff"] -->|fills the tool schema| engine
 
-    subgraph engine["🧠 memory engine — packages/engine (no model inside)"]
+    subgraph engine["🧠 memory engine — no model inside"]
         direction LR
         I[indexer] --- R[retriever] --- P[packer] --- X[exporter]
         SA["StorageAdapter (the seam)"]
     end
 
     engine -->|MCP over stdio| LOCAL
+    engine -->|MCP over HTTP| REMOTE
     engine -->|markdown packet| PASTE
-    engine -->|HTTP · Next.js API| HOSTED
 
-    subgraph LOCAL["💻 local — daily use"]
+    subgraph LOCAL["💻 local tools"]
         L1[Claude Code · Codex · Cursor · VS Code]
         L2[(SQLite + OKF markdown on disk)]
+    end
+
+    subgraph REMOTE["🌐 URL clients"]
+        R1[browser + remote connectors]
     end
 
     subgraph PASTE["📋 anywhere else"]
         X1[claude.ai · ChatGPT · Gemini]
         X2[CLAUDE.md · AGENTS.md]
     end
-
-    subgraph HOSTED["☁️ hosted — the playground"]
-        H1[three-pane demo]
-        H2[(in-memory, per session)]
-    end
 ```
 
-### Three tiers of memory
+### Three kinds of memory
 
-| Tier | What | Stored as | Answers |
-|---|---|---|---|
-| **working** | recent verbatim messages | raw snapshot | "what was just said" |
-| **episodic** | a structured **HandoffNote** per session | goal, decisions, todos, gotchas, next step | "where was I?" |
-| **semantic** | durable **facts** | **OKF markdown** + search index | "what does this project know?" |
+| Kind | What it is | Answers |
+|---|---|---|
+| **working** | recent raw messages | "what was just said?" |
+| **episodic** | a structured handoff per session | "where was I?" |
+| **semantic** | durable facts as OKF files | "what does this project know?" |
 
-**Save** = the agent hands over a HandoffNote + facts → validate → write OKF files
-→ index. No model call, no network.
-**Resume** = pack a priority stack into a token budget: HandoffNote → knowledge
-index → relevant facts → recent transcript tail. Lowest priority gets truncated
-first.
-**Search** = BM25 (+ cosine when configured), blended with a 3-day recency
-half-life, with a relevance floor so junk queries honestly return "no match"
-instead of weak noise.
+**Save** — your agent hands over a handoff and any durable facts. CtxVault
+validates them, writes the markdown, and indexes it. No model call, no network.
 
-### The tricks that make it work
+**Resume** — CtxVault packs a priority stack into a token budget: handoff first,
+then a one-line index of every fact, then the relevant facts, then recent
+transcript. The lowest priority gets trimmed first, so a resume never floods your
+context window.
 
-- **The tool schema is the prompt.** `save_context` advertises the HandoffNote
-  shape with a `.describe()` on every field, so the calling agent is *constrained*
-  into the right structure rather than politely asked for a summary — the same
-  trick as schema-constrained generation, minus our model.
-- **Whoever already knows, writes.** The agent that lived through the session
-  summarizes it. Better source material than a second model reading a transcript,
-  and it costs the user nothing extra.
-- **Markdown is the truth, SQLite is an index.** Facts are real files you can
-  read, edit, grep and commit; the database can be rebuilt from them (`ctx
-  reindex`). That's what makes syncing a vault as simple as syncing a folder.
-- **Graceful degradation everywhere.** No handoff supplied? Raw storage. No
-  embedding key? Keyword search. FTS5 missing from your SQLite build? The same
-  BM25 in JavaScript. Never a dead button.
+**Search** — BM25 keywords, plus vectors when configured, blended with a recency
+bias and a relevance floor. A junk query honestly returns "no match" instead of
+weak noise.
+
+### Why it's built this way
+
+- **The tool schema is the prompt.** Every field carries a description, so the
+  agent is guided into the right structure instead of politely asked for a summary.
+- **Whoever already knows, writes.** The agent that lived the session summarizes
+  it. Better material than a second model reading a transcript, and it costs
+  nothing extra.
+- **Markdown is the truth, SQLite is an index.** That's what makes syncing a
+  vault as simple as syncing a folder.
+- **It degrades gracefully.** No handoff? Raw storage. No embedding key? Keyword
+  search. No FTS5 in your SQLite build? The same BM25 in JavaScript. Never a dead
+  button.
 
 ---
 
 ## Project layout
 
 ```
-packages/engine     # the brain — transport-agnostic, and model-free
-  ├─ ai/            # provider seam (optional embedders, via the AI SDK)
-  ├─ embed/         # embedder interface + implementation (optional upgrade)
-  ├─ export/        # CLAUDE.md / AGENTS.md block writer (bounded, replaceable)
+packages/engine     # the brain — no transport code, no model
   ├─ okf/           # OKF fact files + handoff files (the source of truth)
   ├─ storage/       # StorageAdapter: SQLite+FTS5 (local) · in-memory (hosted)
-  ├─ lib/text.ts    # FTS query building + a BM25 fallback
-  ├─ retriever.ts   # hybrid blend: keyword + vector + recency
+  ├─ export/        # the CLAUDE.md / AGENTS.md block writer
+  ├─ retriever.ts   # hybrid blend: keywords + vectors + recency
   └─ engine.ts      # save / resume / search / export
 apps/mcp-server     # the front doors + the `ctx` CLI
-  ├─ tools.ts       # the 6 MCP tools — registered by BOTH transports
+  ├─ tools.ts       # the 6 MCP tools — shared by both transports
   ├─ index.ts       # stdio MCP (Claude Code, Cursor, Codex, Desktop)
-  ├─ serve.ts       # HTTP MCP (browser + remote connectors), localhost-only
-  ├─ install.ts     # `ctx install` — merges config for each client
-  ├─ hook.ts        # `ctx hook` — model-free auto-capture on PreCompact/SessionEnd
-  ├─ runtime.ts     # one way to open the vault, shared by all four front doors
-  └─ sync.ts        # vault over your own git remote
-apps/playground     # hosted front door — three-pane Next.js demo
+  ├─ serve.ts       # HTTP MCP (browser + remote clients)
+  ├─ install.ts     # `ctx install`
+  ├─ hook.ts        # `ctx hook` — auto-capture
+  └─ sync.ts        # the vault over your own git remote
+apps/playground     # a three-pane Next.js demo
 docs/               # deep dives — start with CODE-TOUR.md
 ```
 
-**Deep dives:** [DATA-FLOW.md](docs/DATA-FLOW.md) · [CODE-TOUR.md](docs/CODE-TOUR.md) ·
+**Deep dives:** [CODE-TOUR.md](docs/CODE-TOUR.md) · [DATA-FLOW.md](docs/DATA-FLOW.md) ·
 [HANDOFF.md](docs/HANDOFF.md) · [SEARCH.md](docs/SEARCH.md) ·
 [OKF-FACTS.md](docs/OKF-FACTS.md) · [PLAYGROUND.md](docs/PLAYGROUND.md) ·
-[REGISTER.md](docs/REGISTER.md) · [PLAN-V2.md](docs/PLAN-V2.md)
-
-<!-- Still to add: a screen recording of the real two-CLI handoff (Claude Code on one
-     side, Codex on the other) and a still of the playground's Vault panel. -->
+[REGISTER.md](docs/REGISTER.md)
 
 ## Roadmap
 
-- Word breaks aren't guessed: `myapp` and `my app` are still two projects (case
-  and punctuation are handled — see below). `ctx projects` shows the real names.
-- OKF merge intelligence — today an updated fact overwrites only when the slug
-  matches; contradicting facts can coexist until then (known, on the list)
-- Publish to npm so install is `npx`, with no clone and no absolute paths
+- Auto-capture for tools other than Claude Code (they have no hook system yet)
+- Smarter fact merging — today an updated fact overwrites only when the slug
+  matches, so two contradicting facts can coexist
 - Redact obvious secret patterns before `ctx sync` pushes transcripts
-- Encryption at rest · re-import hand-edited OKF files as authoritative memory
+- Encryption at rest
 
 ## Tech
 
 TypeScript · npm workspaces · [MCP](https://modelcontextprotocol.io) SDK ·
-better-sqlite3 (+ FTS5) · zod · gray-matter · Next.js. The
-[Vercel AI SDK](https://sdk.vercel.ai) appears only on the optional embedding
+better-sqlite3 (+ FTS5) · zod · gray-matter · Next.js.
+The [Vercel AI SDK](https://sdk.vercel.ai) appears only on the optional embedding
 path and in the playground's simulated agent — never in the core save/resume flow.
+
+## License
+
+[MIT](LICENSE) © Shubham Saini
 
 ---
 
-_Built for a hackathon by someone who switched AI CLIs four times while building
-it — CtxVault carried the context every time._
+_Built by someone who switched AI CLIs four times while building it — CtxVault
+carried the context every time._
