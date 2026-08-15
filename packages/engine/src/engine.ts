@@ -3,6 +3,7 @@ import type { Embedder } from "./embed/types.js";
 import type { Fact, HandoffNote, SearchHit, StoredFact } from "./types.js";
 import { estimateTokens, tokensToChars, truncateHead } from "./lib/tokens.js";
 import { handoffSearchBody } from "./lib/text.js";
+import { normalizeProject } from "./lib/slug.js";
 import { blendHits } from "./retriever.js";
 
 /**
@@ -85,7 +86,11 @@ export class CtxEngine {
   }
 
   /** SAVE — persist the agent's handoff so another tool can pick it up. */
-  async save(input: SaveInput): Promise<SaveResult> {
+  async save(inputRaw: SaveInput): Promise<SaveResult> {
+    // Canonicalize once, at the door. Every read path does the same, so a save
+    // from Claude Code ("CtxVault") and a resume from Codex ("ctxvault") land on
+    // the same key. See normalizeProject.
+    const input = { ...inputRaw, project: normalizeProject(inputRaw.project) };
     const warnings: string[] = [];
     const note = input.handoff ?? null;
     const facts = input.facts ?? [];
@@ -200,12 +205,12 @@ export class CtxEngine {
 
   /** List the durable OKF facts stored for a project (for the Vault view). */
   async listFacts(project: string) {
-    return this.store.listFacts(project);
+    return this.store.listFacts(normalizeProject(project));
   }
 
   /** The newest snapshot for a project (carries the latest HandoffNote). */
   async getLatest(project: string) {
-    return this.store.getLatest(project);
+    return this.store.getLatest(normalizeProject(project));
   }
 
   /**
@@ -216,7 +221,8 @@ export class CtxEngine {
    * answers, because "search is down" is a much worse failure than "search is
    * only lexical today".
    */
-  async search(project: string, query: string, k = 5): Promise<SearchHit[]> {
+  async search(projectRaw: string, query: string, k = 5): Promise<SearchHit[]> {
+    const project = normalizeProject(projectRaw);
     // Pull a wider candidate pool from each index, then re-rank and trim — a
     // doc that is 3rd by keywords and 2nd by vectors should be able to win.
     const pool = Math.min(50, Math.max(k * 5, k));
@@ -295,7 +301,10 @@ export class CtxEngine {
     opts: { includeTranscript?: boolean } = {},
   ): Promise<ResumeResult> {
     const budget = input.budget ?? 4000;
-    const latest = await this.store.getLatest(input.project, input.session);
+    // Look up by the canonical key, but keep `input.project` for display: the
+    // user should see the name they typed, resolved to the vault it belongs to.
+    const project = normalizeProject(input.project);
+    const latest = await this.store.getLatest(project, input.session);
 
     if (!latest) {
       const where = input.session
@@ -315,8 +324,8 @@ export class CtxEngine {
     const headerText = header(latest);
 
     // --- gather the pieces -------------------------------------------------
-    const allFacts = await this.store.listFacts(input.project);
-    const topFacts = await this.rankFactsForHandoff(input.project, note, allFacts);
+    const allFacts = await this.store.listFacts(project);
+    const topFacts = await this.rankFactsForHandoff(project, note, allFacts);
 
     const noteBlock = note ? renderHandoffNote(note) : "";
     const indexBlock = allFacts.length ? renderFactIndex(allFacts) : "";
@@ -384,7 +393,7 @@ export class CtxEngine {
   }
 
   async listSessions(project: string) {
-    return this.store.listSessions(project);
+    return this.store.listSessions(normalizeProject(project));
   }
 }
 

@@ -110,16 +110,21 @@ frontmatter, transcript in the body. The database beside them is a **derived ind
 ```bash
 git clone <this repo> && cd ctxvault
 npm install
-npm run build        # builds the engine + MCP server → apps/mcp-server/dist/index.js
+npm run build        # builds the engine + MCP server
+node apps/mcp-server/dist/cli.js install all
 ```
 
-Grab the absolute path — every install below needs it:
+That's it. `ctx install` writes the config for every AI tool it finds on your
+Mac — Claude Code, Claude Desktop, Cursor, Codex, VS Code — using the absolute
+path of the build you just made, so there is no `<PATH>` to copy anywhere.
+
+It **merges**: your other MCP servers and unrelated settings are left exactly as
+they were, and the file is backed up to `<file>.ctxvault-backup` before the
+first write.
 
 ```bash
-echo "$(pwd)/apps/mcp-server/dist/index.js"
+ctx install claude-code     # or: claude-desktop · cursor · codex · vscode · all
 ```
-
-(Wherever you see `<PATH>` below, paste that.)
 
 ### Try the playground first (optional)
 
@@ -137,65 +142,125 @@ search, export) runs keyless here exactly as it does on your machine. See
 
 ---
 
-## Install as an MCP server
+## Everywhere on your Mac
 
-### Claude Code
+One vault at `~/.ctxvault/`, reached three different ways. Every route runs the
+same six tools from the same file (`apps/mcp-server/src/tools.ts`), so the
+contract cannot drift between them.
+
+| Route | For | Command |
+| --- | --- | --- |
+| **stdio MCP** | tools that launch a process: Claude Code, Claude Desktop, Cursor, Codex, VS Code | `ctx install <client>` |
+| **HTTP MCP** | tools that take a URL: browser clients, sandboxed apps, remote connectors | `ctx serve` |
+| **CLI / paste** | tools with no MCP at all: claude.ai, ChatGPT, Gemini | `ctx export` |
+
+### 1. Local tools (stdio)
 
 ```bash
-claude mcp add ctxvault -s user -- node <PATH>
+ctx install all
 ```
 
-Then `/mcp` inside Claude Code should list `ctxvault` with 6 tools.
+Then `/mcp` inside Claude Code lists `ctxvault` with 6 tools. Claude Desktop
+needs a full quit (⌘Q) — it only reads its config at launch.
 
-### Codex
+### 2. Browser and desktop clients (HTTP)
 
-Add to `~/.codex/config.toml`:
+Some clients can't spawn a process; they want a URL. Give them one:
 
-```toml
-[mcp_servers.ctxvault]
-command = "node"
-args = ["<PATH>"]
+```bash
+ctx serve                            # http://127.0.0.1:7077/mcp
+ctx serve --token "$(openssl rand -hex 16)"   # require a bearer token
 ```
 
-### Cursor
+Then point a client at it:
 
-Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
-
-```json
-{
-  "mcpServers": {
-    "ctxvault": {
-      "command": "node",
-      "args": ["<PATH>"]
-    }
-  }
-}
+```bash
+ctx install claude-code --http --token <TOKEN>
 ```
 
-### VS Code
+For Claude Desktop, add it by hand under **Settings → Connectors → Add custom
+connector** — Desktop takes remote servers through its UI, not its config file
+(`ctx install claude-desktop --http` prints the exact values to paste).
 
-Add to `.vscode/mcp.json` in your workspace (note: VS Code uses `servers`, not
-`mcpServers`):
+`ctx serve` is deliberately boring about safety, because this is your memory on
+a port:
 
-```json
-{
-  "servers": {
-    "ctxvault": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["<PATH>"]
-    }
-  }
-}
-```
+- binds **127.0.0.1 only** — never a LAN address
+- optional bearer token, compared in constant time
+- **DNS-rebinding protection on**, so a page you visit can't POST to your vault
+- **stateless** — one shared engine, a fresh server per request, no session state
+  to leak between clients
+
+One caveat it will tell you about: over HTTP, `export_context --target claude`
+can't know which directory you're in, so it asks for an explicit `dir` instead of
+writing `CLAUDE.md` somewhere surprising.
+
+### 3. Everything else
+
+`ctx export` renders the same packet as plain markdown — see
+[Take it anywhere](#take-it-anywhere--even-to-tools-without-mcp) below.
 
 > No `env` block anywhere — that's the point. If you later add an embedding model
 > for hybrid search, its key goes in the client's `env` (the MCP server only sees
 > the environment its client hands it; a repo `.env` is ignored). Details:
 > [docs/REGISTER.md](docs/REGISTER.md).
 
+---
+
+## Auto-capture: the save that doesn't need a turn
+
+There's a hole in "you hit your usage limit, open another tool, type resume":
+`save_context` needs the agent to have a turn left to write the handoff, and the
+moment you most need the save is exactly the moment it can't produce one.
+
+So the vault stops depending on the agent's cooperation:
+
+```bash
+ctx hook install     # Claude Code: PreCompact + SessionEnd
+```
+
+Claude Code now runs CtxVault right before it discards context and when a session
+ends. The hook is **model-free** — it summarizes nothing, it slices the tail of
+the transcript and stores it. No key, no network, nothing to fail.
+
+Two tiers, not one:
+
+- the **agent-authored handoff** stays the good record — structured, curated
+- the **auto-capture** is the floor under it — raw, but always there
+
+They don't fight. An auto-capture stands down if the agent wrote a real handoff
+in the last 30 minutes, so a raw dump can never arrive later and shadow a
+curated one. And it's throttled to once per 5 minutes per project. Resumed
+auto-captures are labelled as raw evidence, not as a summary, so the next agent
+knows what it's reading.
+
+```bash
+ctx hook status      # when each project was last auto-captured
+```
+
 All tools share one vault at `~/.ctxvault/` — that's exactly what makes the
 handoff work.
+
+---
+
+## One folder, one memory — however you spell it
+
+The project name arrives from three places that disagree: the CLI uses your
+folder name, the auto-capture hook uses your folder name, and an *agent* uses
+whatever you said out loud. So `CtxVault`, `ctxvault` and `CTXVAULT` all resolve
+to the same vault — case and punctuation are normalised on both the save and the
+lookup path.
+
+```bash
+ctx projects        # the canonical name of every project in your vault
+```
+
+The key is always exactly the directory holding that project's files, so what
+`ctx projects` prints is what's on disk. Word breaks are *not* guessed: `myapp`
+and `my app` remain separate projects, which is why the command exists.
+
+Upgrading an older vault? `ctx reindex` rewrites legacy keys in place from the
+markdown — nothing is duplicated and nothing is lost.
 
 ### Try the handoff
 
@@ -220,6 +285,7 @@ ctx export --to claude       # write a block into CLAUDE.md
 ctx export --to agents       # …or AGENTS.md, for Codex
 ctx search "argon2"          # query the vault from a terminal
 ctx list                     # what does this project know?
+ctx projects                 # what have I actually saved, and under what name?
 ```
 
 The `--to claude` / `--to agents` block lives between markers and is **replaced**
@@ -366,7 +432,13 @@ packages/engine     # the brain — transport-agnostic, and model-free
   ├─ lib/text.ts    # FTS query building + a BM25 fallback
   ├─ retriever.ts   # hybrid blend: keyword + vector + recency
   └─ engine.ts      # save / resume / search / export
-apps/mcp-server     # local front door — stdio MCP server (6 tools) + the `ctx` CLI
+apps/mcp-server     # the front doors + the `ctx` CLI
+  ├─ tools.ts       # the 6 MCP tools — registered by BOTH transports
+  ├─ index.ts       # stdio MCP (Claude Code, Cursor, Codex, Desktop)
+  ├─ serve.ts       # HTTP MCP (browser + remote connectors), localhost-only
+  ├─ install.ts     # `ctx install` — merges config for each client
+  ├─ hook.ts        # `ctx hook` — model-free auto-capture on PreCompact/SessionEnd
+  ├─ runtime.ts     # one way to open the vault, shared by all four front doors
   └─ sync.ts        # vault over your own git remote
 apps/playground     # hosted front door — three-pane Next.js demo
 docs/               # deep dives — start with CODE-TOUR.md
@@ -382,9 +454,12 @@ docs/               # deep dives — start with CODE-TOUR.md
 
 ## Roadmap
 
+- Word breaks aren't guessed: `myapp` and `my app` are still two projects (case
+  and punctuation are handled — see below). `ctx projects` shows the real names.
 - OKF merge intelligence — today an updated fact overwrites only when the slug
   matches; contradicting facts can coexist until then (known, on the list)
-- Auto-capture hooks (save without asking)
+- Publish to npm so install is `npx`, with no clone and no absolute paths
+- Redact obvious secret patterns before `ctx sync` pushes transcripts
 - Encryption at rest · re-import hand-edited OKF files as authoritative memory
 
 ## Tech

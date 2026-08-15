@@ -24,6 +24,19 @@ npm install
 npm run build      # builds the engine, then apps/mcp-server/dist/index.js
 ```
 
+> **Shortcut: `ctx install` does everything on this page for you.**
+> ```bash
+> node apps/mcp-server/dist/cli.js install all
+> ```
+> It resolves the absolute path itself, writes the right shape into each client's
+> config (Claude Code, Claude Desktop, Cursor, Codex, VS Code), merges rather than
+> overwrites, and backs the file up first. The manual steps below remain accurate
+> — read them if you want to know exactly what it wrote, or if you're wiring up a
+> client it doesn't know about.
+>
+> For clients that take a **URL** instead of spawning a process (browser clients,
+> remote connectors), run `ctx serve` and use `ctx install <client> --http`.
+
 The server entry point is `apps/mcp-server/dist/index.js`. Every command below needs
 its **absolute** path — from the repo root, print it once and keep it handy:
 

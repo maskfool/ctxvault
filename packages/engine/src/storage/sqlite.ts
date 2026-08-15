@@ -17,6 +17,7 @@ import { cosineSimilarity } from "../lib/vector.js";
 import { bm25Rank, ftsQuery, handoffSearchBody, normalizeBm25 } from "../lib/text.js";
 import { listOkfFiles, writeOkfFile } from "../okf/okf.js";
 import { listHandoffFiles, listProjectDirs, writeHandoffFile } from "../okf/handoff.js";
+import { normalizeProject } from "../lib/slug.js";
 
 /**
  * SqliteAdapter — the durable, local-first implementation of StorageAdapter.
@@ -229,7 +230,13 @@ export class SqliteAdapter implements StorageAdapter {
 
     if (this.knowledgeDir) {
       for (const dir of listProjectDirs(this.knowledgeDir)) {
-        for (const fact of listOkfFiles(this.knowledgeDir, dir)) {
+        for (const raw of listOkfFiles(this.knowledgeDir, dir)) {
+          // Canonicalize on the way in. Frontmatter carries whatever string the
+          // caller used when the file was written ("MyApp"), so a vault created
+          // before normalization heals itself on the next `ctx reindex` — the
+          // row id is stable, so the UPSERT rewrites the project in place
+          // instead of leaving a second, unreachable copy.
+          const fact = { ...raw, project: normalizeProject(raw.project) };
           // Not saveFact(): that would rewrite the very file we just read. Go
           // straight to the row and the index.
           this.upsertFactRow(fact);
@@ -250,7 +257,10 @@ export class SqliteAdapter implements StorageAdapter {
 
     if (this.handoffDir) {
       for (const dir of listProjectDirs(this.handoffDir)) {
-        for (const snap of listHandoffFiles(this.handoffDir, dir)) {
+        for (const raw of listHandoffFiles(this.handoffDir, dir)) {
+          // Same healing as facts above: the snapshot id is stable, so this
+          // rewrites a legacy row's project rather than duplicating it.
+          const snap = { ...raw, project: normalizeProject(raw.project) };
           this.db
             .prepare(
               `INSERT INTO snapshots (id, project, session, created_at, raw_transcript, handoff_json)

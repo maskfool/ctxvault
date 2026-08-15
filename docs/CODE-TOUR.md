@@ -49,18 +49,26 @@ ctxvault/
 │           ├── embed/                # OPTIONAL vector search — see SEARCH.md
 │           │   ├── types.ts          # Embedder interface (the model seam)
 │           │   └── vercel.ts         # VercelEmbedder (any AI SDK embedding model)
-│           └── lib/
-│               ├── text.ts           # FTS query building + JS BM25 fallback
-│               ├── vector.ts         # cosine similarity + recency decay
-│               ├── tokens.ts         # token budgeting (chars/4 rule)
-│               └── slug.ts           # safe slug → filename (path-traversal guard)
+│           ├── lib/
+│           │   ├── text.ts           # FTS query building + JS BM25 fallback
+│           │   ├── vector.ts         # cosine similarity + recency decay
+│           │   ├── tokens.ts         # token budgeting (chars/4 rule)
+│           │   └── slug.ts           # safe slug → filename (path-traversal guard)
+│           └── ../test/              # the invariants, as executable claims
 ├── apps/
-│   ├── mcp-server/        # LOCAL front door — stdio MCP server + the `ctx` CLI
-│   │   └── src/
-│   │       ├── index.ts   # registers the 6 MCP tools, boots the transport
-│   │       ├── schema.ts  # the handoff form the agent fills — see HANDOFF.md
-│   │       ├── cli.ts     # `ctx` — export / search / list / reindex
-│   │       └── config.ts  # where the vault lives on disk (~/.ctxvault)
+│   ├── mcp-server/        # THE FRONT DOORS + the `ctx` CLI
+│   │   ├── src/
+│   │   │   ├── tools.ts   # the 6 MCP tools — registered by BOTH transports
+│   │   │   ├── index.ts   # stdio MCP (spawned by Claude Code, Cursor, Codex…)
+│   │   │   ├── serve.ts   # HTTP MCP (browser + remote connectors), localhost-only
+│   │   │   ├── install.ts # `ctx install` — merges config per client
+│   │   │   ├── hook.ts    # `ctx hook` — model-free auto-capture
+│   │   │   ├── runtime.ts # one way to open the vault, shared by all four
+│   │   │   ├── sync.ts    # the vault over your own git remote
+│   │   │   ├── schema.ts  # the handoff form the agent fills — see HANDOFF.md
+│   │   │   ├── cli.ts     # `ctx` — install / serve / hook / export / search / sync
+│   │   │   └── config.ts  # where the vault lives on disk (~/.ctxvault)
+│   │   └── test/          # hook policy, config merging, arg parsing
 │   └── playground/        # HOSTED front door — Next.js on Vercel — see PLAYGROUND.md
 │       ├── app/           # three-pane UI + /api routes (save/resume/search/…)
 │       └── lib/           # per-session engine registry + distill.ts (the fake agent)
@@ -73,8 +81,9 @@ ctxvault/
 
 > **There is no `llm/` directory, and that's the headline.** v1 had one — a
 > summarizer and prompts that called our own model. v2 deleted it: the calling
-> agent writes the handoff, so the only prompt left in the codebase is the field
-> descriptions in `apps/mcp-server/src/schema.ts`. See [HANDOFF.md](HANDOFF.md).
+> agent writes the handoff, so the only prompts left in the codebase are the
+> field descriptions in `apps/mcp-server/src/schema.ts` and the tool descriptions
+> in `apps/mcp-server/src/tools.ts`. See [HANDOFF.md](HANDOFF.md).
 
 ---
 
@@ -173,6 +182,25 @@ the calling agent already did the thinking, so this method's job is validation,
 durability and indexing. Constructor is `(store, embedder?)`, and the embedder is
 optional because keyword search lives in the storage adapter.
 
+### `packages/engine/src/lib/slug.ts` — the identity boundary ⭐
+**What:** `slugify()` (untrusted LLM string → safe filename) and
+`normalizeProject()` (any spelling of a project → its canonical key).
+**Why `normalizeProject` exists:** `project` is the vault's primary key and it
+arrives from three sources that disagree — the CLI and the hook use
+`basename(cwd)`, an agent uses whatever the human said. Storage used to be split
+on this: file paths ran through `slugify`, so every spelling shared a directory,
+while SQL matched the raw string, so every spelling was a different vault. You
+could save context and be told *"No saved context found"* for the same folder —
+which reads as data loss, not a typo.
+**The invariant:** `normalizeProject` **is** `slugify`, deliberately — not merely
+similar. That equality means the database key is always exactly the directory
+name holding that project's files, which is what lets `ctx projects` answer from
+the filesystem and lets `importFromFiles` heal a legacy vault in place (the row
+id is stable, so the UPSERT rewrites rather than duplicates).
+**Known limit:** word breaks aren't guessed. `myapp` and `my app` stay distinct,
+because collapsing them would break the invariant above. `ctx projects` is the
+escape hatch.
+
 ### `packages/engine/src/index.ts` — public API
 **What:** the curated export list.
 **Contains:** re-exports of `CtxEngine`, `SqliteAdapter`, the types, and the helpers.
@@ -188,18 +216,76 @@ freely without breaking callers.
 **Why:** a *shared* on-disk location is what lets Claude Code and Codex see each other's
 saves. `CTXVAULT_HOME` gives demos a clean vault.
 
+### `apps/mcp-server/src/runtime.ts` — one way to open the vault
+**What:** `createRuntime()` → `{ store, engine, searchStatus }`.
+**Why:** four front doors now reach the same memory (stdio, HTTP, CLI, hook). If each
+built its own adapter and made its own embedder decision, "the same vault everywhere"
+would quietly become "almost the same vault everywhere". The decision lives here once.
+**Note:** it never throws on a bad embedder — keyword search needs no key, so a broken
+embedder is a downgrade to lexical search, never a failure to start (AGENTS.md rule 8).
+
+### `apps/mcp-server/src/tools.ts` — the 6 tools, transport-free ⭐
+**What:** `registerTools({ server, engine, log, defaultDir })` registers `save_context`,
+`resume_context`, `export_context`, `list_sessions`, `search_memory`, `list_facts` onto
+*any* `McpServer`.
+**Why it's separate:** stdio and HTTP both register **these**, so a Claude Code process
+and a browser connector get a byte-identical contract. One definition, two transports.
+**The `.describe()` strings are the product.** They are the only instructions a calling
+agent ever receives — they say *when* to reach for the tool ("when you are about to hit a
+usage limit") and that the **caller** writes the handoff. That's the v2 contract, encoded
+as a schema instead of a prompt we control.
+**`defaultDir`:** where `export_context` writes `CLAUDE.md` when the caller gives no
+`dir`. stdio passes `process.cwd()` (the client launched us inside the project); HTTP
+passes `null`, because the server's cwd has nothing to do with the caller's — so the tool
+asks instead of writing a file into the wrong repo.
+
 ### `apps/mcp-server/src/index.ts` — the LOCAL front door ⭐
-**What:** the stdio MCP server.
-**Contains:**
-- Builds one `SqliteAdapter` + `CtxEngine`.
-- `server.registerTool(...)` × 3: `save_context`, `resume_context`, `list_sessions`.
-  Their **descriptions are written as prompts** — they tell the model *when* to call the
-  tool ("when you are about to hit a usage limit", "when the user says resume").
-- `StdioServerTransport` + `server.connect()` to start listening.
+**What:** the stdio MCP server. An MCP client spawns it and speaks JSON-RPC over
+stdin/stdout.
+**Contains:** `createRuntime()`, `registerTools(...)`, then `StdioServerTransport` +
+`server.connect()`. It is deliberately thin — the tools moved to `tools.ts`.
 **The one rule that will bite you:** **never `console.log`.** stdio MCP uses **stdout for
 the JSON-RPC protocol**. All logging goes to **stderr** via `console.error`. One stray
 stdout write corrupts the stream and the client silently drops the server. That's why the
 file defines `const log = (...) => console.error(...)` and uses it everywhere.
+
+### `apps/mcp-server/src/serve.ts` — the REMOTE front door
+**What:** `ctx serve` — Streamable HTTP MCP on `127.0.0.1:7077/mcp`, plus `/health`.
+**Why:** stdio only works for clients that can spawn a process, which rules out browser
+clients, sandboxed apps and remote-connector fields. Those speak HTTP MCP.
+**Stateless by choice:** a fresh `McpServer` + transport per request over the **shared**
+engine. No session state means no leak between clients and nothing to reap on disconnect;
+the state worth keeping is on disk anyway. The engine (and its SQLite handle) is the
+expensive part and it's created once.
+**Safety, because this is memory on a port:** binds localhost only, optional bearer token
+compared with `timingSafeEqual` (a plain `===` leaks the prefix), DNS-rebinding protection
+on, and an 8 MB body cap.
+
+### `apps/mcp-server/src/install.ts` — `ctx install <client>`
+**What:** writes the MCP config for Claude Code, Claude Desktop, Cursor, Codex, VS Code.
+**Why:** the old quick start was clone → build → copy an absolute path → hand-edit a
+different file per client, one of them TOML, one of them keyed `servers` instead of
+`mcpServers`. Every step is a place to give up.
+**Two rules that make editing someone's config safe:** back up before the first write, and
+**merge, never replace** — other servers and unrelated settings survive byte-identical.
+**`upsertTomlTable` is pure and tested** because it edits a hand-written file: it must also
+drop stale *subtables* (an old `[mcp_servers.ctxvault.env]` full of API keys would
+otherwise survive a header-only replace and keep being loaded).
+
+### `apps/mcp-server/src/hook.ts` — auto-capture ⭐
+**What:** `ctx hook` runs on Claude Code's **PreCompact** and **SessionEnd** and stores a
+raw transcript tail.
+**The hole it fills:** `save_context` needs the agent to have a turn left to write the
+handoff — and the moment you most need the save is exactly the moment it can't produce
+one. The demo works; the real limit scenario doesn't. This makes the vault independent of
+the agent's cooperation.
+**Model-free by rule (AGENTS.md 7):** it summarizes nothing. It slices JSONL and stores
+it. No key, no network, nothing that can be down.
+**`decideCapture` is the whole feature, and it's pure.** Two tiers must not fight: an
+automatic raw snapshot arriving *later* than a curated handoff would become "newest" and
+shadow it on resume. So capture stands down if an agent-authored handoff landed within 30
+minutes, and throttles to once per 5 minutes per project. Saved snapshots carry a banner
+marking them as raw evidence, not a summary — so the next agent knows what it's reading.
 
 ---
 
@@ -272,4 +358,12 @@ The two processes never talk — they meet at `~/.ctxvault/ctxvault.db`.
 | **Memory engine complete** | ✅ | all of `packages/engine` |
 | Web-safe engine barrel | ✅ done | `packages/engine/src/web.ts` |
 | Vercel playground (3-pane UI + API) | ✅ done | `apps/playground` — see [PLAYGROUND.md](PLAYGROUND.md) |
-| `ctx sync` — vault over your own git remote | ⏳ next | see [PLAN-V2.md](PLAN-V2.md) phase 4 |
+| `ctx sync` — vault over your own git remote | ✅ done | `sync.ts` |
+| Test suite + CI (the invariants) | ✅ done | `packages/engine/test/`, `apps/mcp-server/test/`, `.github/workflows/ci.yml` |
+| Shared tool definitions (one contract, two transports) | ✅ done | `tools.ts` |
+| `ctx serve` — HTTP MCP for browser/desktop clients | ✅ done | `serve.ts` |
+| `ctx install <client>` — one-command setup | ✅ done | `install.ts` |
+| `ctx hook` — model-free auto-capture | ✅ done | `hook.ts` |
+| Project-identity normalisation (`MyApp` vs `myapp`) | ✅ done | `lib/slug.ts` `normalizeProject` + `engine.ts` entry points |
+| npm publish (install via `npx`, no absolute paths) | ⏳ next | `apps/mcp-server/package.json` |
+| Secret redaction before `ctx sync` pushes transcripts | ⏳ next | `sync.ts` |

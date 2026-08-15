@@ -16,3 +16,23 @@ export function slugify(input: string): string {
     .slice(0, 80); // keep filenames sane
   return s || "untitled";
 }
+
+/**
+ * Canonicalize a project identifier.
+ *
+ * WHY THIS EXISTS. `project` is the vault's primary key, and it arrives from
+ * three places that disagree: the CLI uses `basename(cwd)`, the auto-capture
+ * hook uses `basename(cwd)`, and an AGENT uses whatever the human said out loud.
+ * So the same project shows up as "CtxVault", "ctxvault" and "ctx vault".
+ *
+ * Storage was already split on this: file paths ran through `slugify`, so every
+ * spelling shared one directory, while database lookups matched the raw string
+ * exactly, so every spelling was a different vault. You could save context and
+ * then be told "No saved context found" for the same folder — the worst failure
+ * a memory tool can have, because it looks like data loss rather than a typo.
+ *
+ * This is DELIBERATELY the same function as `slugify`, not merely similar. That
+ * equality is the invariant: **the project key is always exactly the directory
+ * name that holds its files.** Weaken it and the split-brain comes back.
+ */
+export const normalizeProject = (project: string): string => slugify(project);

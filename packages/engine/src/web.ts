@@ -23,7 +23,7 @@ export type {
 } from "./engine.js";
 export type { Embedder } from "./embed/types.js";
 export { VercelEmbedder } from "./embed/vercel.js";
-export { slugify } from "./lib/slug.js";
+export { slugify, normalizeProject } from "./lib/slug.js";
 export {
   DEFAULT_MODEL,
   DEFAULT_EMBED_MODEL,

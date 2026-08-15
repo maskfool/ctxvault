@@ -24,7 +24,7 @@ export {
   listHandoffFiles,
   listProjectDirs,
 } from "./okf/handoff.js";
-export { slugify } from "./lib/slug.js";
+export { slugify, normalizeProject } from "./lib/slug.js";
 export { CtxEngine } from "./engine.js";
 export type {
   SaveInput,
