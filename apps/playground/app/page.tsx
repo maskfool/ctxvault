@@ -185,7 +185,19 @@ export default function Page() {
       <header className="topbar">
         <div className="brand">ctx<span>Vault</span></div>
         <nav className="nav" aria-label="Primary navigation">
-          <button className="nav-link vault-link" type="button">The Vault</button>
+          <button
+            className="nav-link vault-link"
+            type="button"
+            // Plain (instant) scroll on purpose: `behavior: "smooth"` is a no-op
+            // in some engines, and a nav button that silently does nothing is
+            // worse than one that jumps. `nearest` makes it a no-op on desktop,
+            // where all three columns are already on screen.
+            onClick={() =>
+              document.getElementById("vault")?.scrollIntoView({ block: "nearest" })
+            }
+          >
+            The Vault
+          </button>
           <button className="nav-link" type="button" onClick={() => setActive("A")}>Tool A</button>
           <button className="nav-link" type="button" onClick={() => setActive("B")}>Tool B</button>
         </nav>
@@ -257,8 +269,20 @@ export default function Page() {
       </div>
 
       <footer className="trust">
-        <div className="footer-left"><span>© 2024 — THE HANDOFF BUTTON FOR AI TOOLS</span></div>
-        <div className="footer-links"><a href="https://github.com/maskfool/ctxvault">Install from GitHub</a><span aria-label="love">❤️</span></div>
+        <div className="footer-left"><span>© {new Date().getFullYear()} — THE HANDOFF BUTTON FOR AI TOOLS</span></div>
+        <div className="footer-links">
+          <a href="https://github.com/maskfool/ctxvault" target="_blank" rel="noreferrer noopener">
+            Install from GitHub
+          </a>
+          <a
+            href="https://github.com/maskfool/ctxvault#how-it-works"
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            How it works
+          </a>
+          <span aria-label="love">❤️</span>
+        </div>
         <div className="session-trust">🔒 Same engine runs locally as an MCP server inside Claude Code &amp; Codex. Here it runs over HTTP with an in-memory store keyed to <code>your session</code>.</div>
       </footer>
     </div>
@@ -419,7 +443,9 @@ function VaultPanel(props: {
   const filledBlocks = Math.ceil(load / 20);
 
   return (
-    <div className="col vault">
+    // id is the scroll target for the nav's "The Vault" link — on a narrow
+    // screen the three columns stack, so the vault can be off-screen.
+    <div className="col vault" id="vault">
       <div className="vault-head">
         <div className="vault-title">▤ THE VAULT</div>
       </div>

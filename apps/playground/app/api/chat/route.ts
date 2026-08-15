@@ -20,8 +20,13 @@ export async function POST(req: NextRequest) {
   const resumedContext =
     typeof body.resumedContext === "string" ? body.resumedContext.slice(0, 20_000) : undefined;
 
-  return withSession(req, async () => {
-    const reply = await chat(persona, messages, resumedContext);
-    return { reply };
-  });
+  // The only route that spends money — it gets the tight per-IP AI budget.
+  return withSession(
+    req,
+    async () => {
+      const reply = await chat(persona, messages, resumedContext);
+      return { reply };
+    },
+    { costsMoney: true },
+  );
 }

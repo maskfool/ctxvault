@@ -20,28 +20,34 @@ export async function POST(req: NextRequest) {
   const transcript = String(body.transcript ?? "").slice(0, MAX_TRANSCRIPT);
   const session = typeof body.session === "string" ? body.session : "main";
 
-  return withSession(req, async ({ engine }) => {
-    if (!transcript.trim()) return { error: "nothing to save" };
+  // distill() calls a model to play the agent, so this route spends money too —
+  // the engine's own save path does not, but the demo's stand-in agent does.
+  return withSession(
+    req,
+    async ({ engine }) => {
+      if (!transcript.trim()) return { error: "nothing to save" };
 
-    // The pane's transcript arrives as "User: …" / "Assistant: …" blocks
-    // (see transcriptOf in app/page.tsx); distill wants them back as messages.
-    const messages: ChatMessage[] = transcript
-      .split(/\n\n(?=(?:User|Assistant):)/i)
-      .map((block) => ({
-        role: (/^user:/i.test(block) ? "user" : "assistant") as ChatMessage["role"],
-        content: block.replace(/^(?:User|Assistant):\s*/i, ""),
-      }))
-      .filter((m) => m.content.trim());
+      // The pane's transcript arrives as "User: …" / "Assistant: …" blocks
+      // (see transcriptOf in app/page.tsx); distill wants them back as messages.
+      const messages: ChatMessage[] = transcript
+        .split(/\n\n(?=(?:User|Assistant):)/i)
+        .map((block) => ({
+          role: (/^user:/i.test(block) ? "user" : "assistant") as ChatMessage["role"],
+          content: block.replace(/^(?:User|Assistant):\s*/i, ""),
+        }))
+        .filter((m) => m.content.trim());
 
-    const { handoff, facts, source } = await distill(messages);
-    const result = await engine.save({ project: PROJECT, session, handoff, facts, transcript });
+      const { handoff, facts, source } = await distill(messages);
+      const result = await engine.save({ project: PROJECT, session, handoff, facts, transcript });
 
-    return {
-      mode: result.mode,
-      source, // "agent" = a model wrote the handoff, "template" = keyless fallback
-      factsExtracted: result.factsExtracted,
-      snapshotId: result.snapshotId,
-      warning: result.warning ?? null,
-    };
-  });
+      return {
+        mode: result.mode,
+        source, // "agent" = a model wrote the handoff, "template" = keyless fallback
+        factsExtracted: result.factsExtracted,
+        snapshotId: result.snapshotId,
+        warning: result.warning ?? null,
+      };
+    },
+    { costsMoney: true },
+  );
 }
