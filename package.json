@@ -10,8 +10,14 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=@ctxvault/engine && npm run build --workspace=@ctxvault/mcp-server",
+    "typecheck": "npm run typecheck --workspace=@ctxvault/engine && npm run typecheck --workspace=@ctxvault/mcp-server",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "mcp": "npm run start --workspace=@ctxvault/mcp-server",
     "mcp:dev": "npm run dev --workspace=@ctxvault/mcp-server",
     "playground": "npm run dev --workspace=@ctxvault/playground"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.7"
   }
 }

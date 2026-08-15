@@ -111,7 +111,14 @@ export function readHandoffFile(path: string, project: string): Snapshot | null 
     return null; // unreadable or malformed frontmatter — skip, don't crash a rebuild
   }
   const d = parsed.data as Record<string, unknown>;
-  if (typeof d.id !== "string" || typeof d.created !== "string") return null;
+  // A hand-edited file may leave the ISO date UNQUOTED, which YAML parses as a
+  // Date object. These files are meant to be human-editable, so coerce instead
+  // of dropping the snapshot on a technicality.
+  const iso = (v: unknown): string | null =>
+    typeof v === "string" ? v : v instanceof Date ? v.toISOString() : null;
+  const id = typeof d.id === "string" ? d.id : null;
+  const created = iso(d.created);
+  if (!id || !created) return null;
 
   let note: HandoffNote | null = null;
   if (typeof d.goal === "string") {
@@ -129,10 +136,10 @@ export function readHandoffFile(path: string, project: string): Snapshot | null 
   }
 
   return {
-    id: d.id,
+    id,
     project: typeof d.project === "string" ? d.project : project,
     session: typeof d.session === "string" ? d.session : "main",
-    createdAt: d.created,
+    createdAt: created,
     rawTranscript: parsed.content.trim(),
     handoffNote: note,
   };

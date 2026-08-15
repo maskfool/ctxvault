@@ -60,6 +60,9 @@ export function writeOkfFile(knowledgeDir: string, fact: StoredFact): string {
 export function readOkfFile(path: string, project: string, slug: string): StoredFact {
   const parsed = matter(readFileSync(path, "utf8"));
   const data = parsed.data as Record<string, unknown>;
+  // Hand-edited frontmatter may leave the date unquoted → YAML returns a Date.
+  const isoDate = (v: unknown): string =>
+    typeof v === "string" ? v : v instanceof Date ? v.toISOString() : new Date().toISOString();
   return {
     project: typeof data.project === "string" ? data.project : project,
     slug,
@@ -68,7 +71,7 @@ export function readOkfFile(path: string, project: string, slug: string): Stored
     body: parsed.content.trim(),
     tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
     session: (data.session as string) ?? "main",
-    updatedAt: (data.updated as string) ?? new Date().toISOString(),
+    updatedAt: isoDate(data.updated),
     filePath: path,
   };
 }

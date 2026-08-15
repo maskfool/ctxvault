@@ -1,0 +1,31 @@
+name: CI
+
+# The point of this workflow is the invariants: markdown-is-truth rebuilds,
+# bounded CLAUDE.md blocks, slug safety, the ranking contract. If a PR breaks
+# one of those, the pitch broke — that's worth blocking on.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS because that's where the vault runs day-to-day (Claude Code,
+        # Claude Desktop, Cursor); linux because that's where CI usually runs.
+        os: [macos-latest, ubuntu-latest]
+        node: [22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
